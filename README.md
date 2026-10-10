@@ -158,7 +158,7 @@ npx seq-migrate status
 
 ## 🤖 AI Agent & Contributor Friendly (`AGENTS.md`)
 
-This project strictly adheres to **Clean Architecture**. For AI coding assistants or developers extending dialects and generators, see [AGENTS.md](file:///Users/hasanacar/Documents/Projects/open-source-projects/sequelize-makemigrations/AGENTS.md) and [docs/ARCHITECTURE.md](file:///Users/hasanacar/Documents/Projects/open-source-projects/sequelize-makemigrations/docs/ARCHITECTURE.md).
+This project strictly adheres to **Clean Architecture**. For AI coding assistants or developers extending dialects and generators, see [AGENTS.md](./AGENTS.md) and [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ---
 

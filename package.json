@@ -13,8 +13,8 @@
     "AGENTS.md"
   ],
   "scripts": {
-    "build": "go build -o bin/seq-migrate ./cmd/seq-migrate",
-    "test": "go test -v ./core/...",
+    "build": "node scripts/build.js",
+    "test": "go test -v ./...",
     "prepublishOnly": "npm run build"
   },
   "repository": {
