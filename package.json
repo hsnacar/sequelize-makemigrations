@@ -1,0 +1,42 @@
+{
+  "name": "sequelize-makemigrations",
+  "version": "1.0.0",
+  "description": "Automated, zero-risk, high-performance migration generator for Sequelize (v6 & v7) powered by Go.",
+  "bin": {
+    "seq-migrate": "./bin/run.js",
+    "sequelize-makemigrations": "./bin/run.js"
+  },
+  "files": [
+    "bin",
+    "README.md",
+    "LICENSE",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "build": "go build -o bin/seq-migrate ./cmd/seq-migrate",
+    "test": "go test -v ./core/...",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hsnacar/sequelize-makemigrations.git"
+  },
+  "keywords": [
+    "sequelize",
+    "sequelize-cli",
+    "makemigrations",
+    "migrations",
+    "auto-migrations",
+    "database",
+    "diff",
+    "orm",
+    "schema",
+    "golang"
+  ],
+  "author": "Hasan Acar <hasanacar.eng@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/hsnacar/sequelize-makemigrations/issues"
+  },
+  "homepage": "https://github.com/hsnacar/sequelize-makemigrations#readme"
+}

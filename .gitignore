@@ -1,0 +1,14 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Test and sandbox artifacts
+tmp/
+*.db
+*.sqlite
+.seq-schema.json.bak
+
+# OS
+.DS_Store
+.idea/
+.vscode/
