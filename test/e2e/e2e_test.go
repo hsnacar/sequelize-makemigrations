@@ -11,25 +11,24 @@ import (
 )
 
 func TestEndToEndSequelizeWorkflow(t *testing.T) {
-	// 1. Locate repository root and build binary
+	// 1. Prepare isolated workspace directory
+	workDir, err := os.MkdirTemp("", "seq-e2e-workspace-*")
+	if err != nil {
+		t.Fatalf("failed to create temp workspace: %v", err)
+	}
+	defer os.RemoveAll(workDir)
+
 	repoRoot, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatalf("failed to determine repo root: %v", err)
 	}
-	binPath := filepath.Join(repoRoot, "bin", "seq-migrate")
+	binPath := filepath.Join(workDir, "seq-migrate")
 
 	buildCmd := exec.Command("go", "build", "-o", binPath, "./cmd/seq-migrate")
 	buildCmd.Dir = repoRoot
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build binary: %s", string(out))
 	}
-
-	// 2. Prepare isolated workspace directory
-	workDir, err := os.MkdirTemp("", "seq-e2e-workspace-*")
-	if err != nil {
-		t.Fatalf("failed to create temp workspace: %v", err)
-	}
-	defer os.RemoveAll(workDir)
 
 	modelsDir := filepath.Join(workDir, "models")
 	if err := os.MkdirAll(modelsDir, 0755); err != nil {
