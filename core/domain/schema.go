@@ -1,5 +1,10 @@
 package domain
 
+import (
+	"fmt"
+	"strings"
+)
+
 // DataType represents standardized, dialect-agnostic column types.
 type DataType struct {
 	Name      string        `json:"name"`                // e.g. "STRING", "INTEGER", "BOOLEAN", "ENUM"
@@ -107,3 +112,48 @@ func (d *Diff) IsEmpty() bool {
 		len(d.ConstraintsAdded) == 0 &&
 		len(d.ConstraintsDropped) == 0
 }
+
+// Summary returns a human-readable summary of the diff.
+func (d *Diff) Summary() string {
+	if d.IsEmpty() {
+		return "No schema changes detected."
+	}
+	var lines []string
+	if len(d.TablesCreated) > 0 {
+		var names []string
+		for _, t := range d.TablesCreated {
+			names = append(names, t.Name)
+		}
+		lines = append(lines, fmt.Sprintf("Created tables (%d): %s", len(d.TablesCreated), strings.Join(names, ", ")))
+	}
+	if len(d.TablesDropped) > 0 {
+		var names []string
+		for _, t := range d.TablesDropped {
+			names = append(names, t.Name)
+		}
+		lines = append(lines, fmt.Sprintf("Dropped tables (%d): %s", len(d.TablesDropped), strings.Join(names, ", ")))
+	}
+	if len(d.ColumnsAdded) > 0 {
+		var names []string
+		for _, c := range d.ColumnsAdded {
+			names = append(names, fmt.Sprintf("%s.%s", c.TableName, c.Column.Name))
+		}
+		lines = append(lines, fmt.Sprintf("Added columns (%d): %s", len(d.ColumnsAdded), strings.Join(names, ", ")))
+	}
+	if len(d.ColumnsModified) > 0 {
+		var names []string
+		for _, c := range d.ColumnsModified {
+			names = append(names, fmt.Sprintf("%s.%s", c.TableName, c.Column.Name))
+		}
+		lines = append(lines, fmt.Sprintf("Modified columns (%d): %s", len(d.ColumnsModified), strings.Join(names, ", ")))
+	}
+	if len(d.ColumnsDropped) > 0 {
+		var names []string
+		for _, c := range d.ColumnsDropped {
+			names = append(names, fmt.Sprintf("%s.%s", c.TableName, c.Column.Name))
+		}
+		lines = append(lines, fmt.Sprintf("Dropped columns (%d): %s", len(d.ColumnsDropped), strings.Join(names, ", ")))
+	}
+	return strings.Join(lines, "\n")
+}
+

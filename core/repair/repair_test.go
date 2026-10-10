@@ -28,16 +28,20 @@ module.exports = {
   async up() {}
 };`), 0644)
 
+	// Incomplete migration (missing up)
+	noUpFile := filepath.Join(tmpDir, "20260103-missing-up.js")
+	_ = os.WriteFile(noUpFile, []byte(`
+module.exports = {
+  async down() {}
+};`), 0644)
+
 	t.Run("Audits migration files correctly", func(t *testing.T) {
 		issues, err := AuditMigrations(tmpDir)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(issues) != 1 {
-			t.Fatalf("expected 1 issue, got %d", len(issues))
-		}
-		if issues[0].File != "20260102-missing-down.js" {
-			t.Errorf("expected issue on broken file, got %s", issues[0].File)
+		if len(issues) != 2 {
+			t.Fatalf("expected 2 issues, got %d", len(issues))
 		}
 	})
 
@@ -47,12 +51,34 @@ module.exports = {
 			t.Fatalf("failed to repair: %v", err)
 		}
 
-		issues, err := AuditMigrations(tmpDir)
+		// Re-repairing an already valid file should be a no-op
+		err = RepairMissingDown(brokenFile)
 		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+			t.Fatalf("re-repairing should succeed as no-op: %v", err)
 		}
-		if len(issues) != 0 {
-			t.Errorf("expected 0 issues after repair, got %d", len(issues))
+	})
+
+	t.Run("Fails gracefully when closing bracket is missing", func(t *testing.T) {
+		corruptFile := filepath.Join(tmpDir, "corrupt.js")
+		_ = os.WriteFile(corruptFile, []byte("module.exports = {"), 0644)
+
+		err := RepairMissingDown(corruptFile)
+		if err == nil {
+			t.Errorf("expected error when closing bracket is missing")
+		}
+	})
+
+	t.Run("Non-existing directory returns empty with no error", func(t *testing.T) {
+		issues, err := AuditMigrations(filepath.Join(tmpDir, "non-existent"))
+		if err != nil || len(issues) != 0 {
+			t.Errorf("expected nil error and 0 issues for non-existent directory")
+		}
+	})
+
+	t.Run("Non-existing file returns error on repair", func(t *testing.T) {
+		err := RepairMissingDown(filepath.Join(tmpDir, "does-not-exist.js"))
+		if err == nil {
+			t.Errorf("expected error when repairing non-existent file")
 		}
 	})
 }

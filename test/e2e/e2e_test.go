@@ -106,7 +106,7 @@ run().catch(err => { console.error(err); process.exit(1); });
 		return nil
 	}
 
-	// Helper to query actual database table columns from SQLite
+	// Helper to query actual database table columns from SQLite with strict error checking
 	getActualColumns := func(tableName string) ([]string, error) {
 		script := fmt.Sprintf(`'use strict';
 const { Sequelize } = require('sequelize');
@@ -138,30 +138,53 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 	// STAGE 1: Initial Migration Creation
 	// ==========================================
 	t.Run("Stage 1: Generate initial schema migration with verify", func(t *testing.T) {
-		writeModels("  email: { type: DataTypes.STRING, allowNull: false }", "  price: { type: DataTypes.INTEGER, defaultValue: 0 }")
+		// Define baseline models with proper attributes
+		writeModels(
+			"  email: { type: DataTypes.STRING, allowNull: false, unique: true }",
+			"  price: { type: DataTypes.DECIMAL(10, 2), allowNull: false }",
+		)
 
-		cmd := exec.Command(binPath, "make", "-n", "create-initial-tables", "--verify")
+		// Run: seq-migrate make --name=init-schema --verify
+		cmd := exec.Command(binPath, "make", "--name=init-schema", "--verify")
 		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("seq-migrate make failed: %s", string(out))
+			t.Fatalf("seq-migrate make failed: %s, err: %v", string(out), err)
 		}
 
+		if !strings.Contains(string(out), "Migration created:") {
+			t.Errorf("expected success message in output, got: %s", string(out))
+		}
 		if !strings.Contains(string(out), "Shadow sandbox verified!") {
-			t.Errorf("expected shadow sandbox verification success, got: %s", string(out))
+			t.Errorf("expected verify message in output, got: %s", string(out))
 		}
 
-		migrations, err := filepath.Glob(filepath.Join(workDir, "migrations", "*.js"))
-		if err != nil || len(migrations) != 1 {
-			t.Fatalf("expected 1 migration file, found %d", len(migrations))
+		// 1. Verify that migration file exists in migrations/
+		migrationsDir := filepath.Join(workDir, "migrations")
+		entries, err := os.ReadDir(migrationsDir)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("expected 1 migration file, found %d", len(entries))
 		}
 
-		// Apply migration to real DB
-		if err := applyMigration(migrations[0], "up"); err != nil {
-			t.Fatalf("failed to apply migration to real DB: %v", err)
+		migrationFile := filepath.Join(migrationsDir, entries[0].Name())
+		if !strings.HasSuffix(migrationFile, "-init-schema.js") {
+			t.Errorf("unexpected migration name: %s", migrationFile)
 		}
 
-		// Verify real SQLite table columns
+		// 2. Verify that .seq-schema.json snapshot was created
+		snapshotPath := filepath.Join(workDir, ".seq-schema.json")
+		if _, err := os.Stat(snapshotPath); err != nil {
+			t.Fatalf("expected .seq-schema.json to exist: %v", err)
+		}
+
+		// 3. Physically execute the migration UP on the real SQLite DB!
+		if err := applyMigration(migrationFile, "up"); err != nil {
+			t.Fatalf("failed to apply initial migration to real DB: %v", err)
+		}
+
+		// 4. Verify physical database schema in SQLite!
 		userCols, err := getActualColumns("Users")
 		if err != nil {
 			t.Fatalf("error checking Users: %v", err)
@@ -182,50 +205,63 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 	})
 
 	// ==========================================
-	// STAGE 2: Consistency Check (No drift)
+	// STAGE 2: CI Check (No Drift)
 	// ==========================================
 	t.Run("Stage 2: Check command confirms 100% sync", func(t *testing.T) {
 		cmd := exec.Command(binPath, "check")
 		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+
 		out, err := cmd.CombinedOutput()
 		if err != nil {
-			t.Fatalf("expected check to pass with code 0, got err: %v, out: %s", err, string(out))
+			t.Fatalf("seq-migrate check failed unexpectedly: %s", string(out))
 		}
+
 		if !strings.Contains(string(out), "100% in sync") {
-			t.Errorf("expected 100%% sync message, got: %s", string(out))
+			t.Errorf("expected clean schema message, got: %s", string(out))
 		}
 	})
 
 	// ==========================================
-	// STAGE 3: Incremental Schema Change & Drift Detection
+	// STAGE 3: Incremental Column Additions & Drift Detection
 	// ==========================================
 	t.Run("Stage 3: Add new column, detect drift, and generate migration", func(t *testing.T) {
-		// Add "bio" to Users and "sku" to Products
+		// Update models: add User.bio and Product.sku
 		writeModels(
-			"  email: { type: DataTypes.STRING, allowNull: false },\n  bio: { type: DataTypes.TEXT, allowNull: true }",
-			"  price: { type: DataTypes.INTEGER, defaultValue: 0 },\n  sku: { type: DataTypes.STRING, allowNull: true }",
+			"  email: { type: DataTypes.STRING, allowNull: false, unique: true },\n  bio: { type: DataTypes.STRING(500), allowNull: true }",
+			"  price: { type: DataTypes.DECIMAL(10, 2), allowNull: false },\n  sku: { type: DataTypes.STRING(50), allowNull: true }",
 		)
 
-		// 1. Run check -> must detect drift!
+		// 1. Run check -> Should fail with drift!
 		checkCmd := exec.Command(binPath, "check")
 		checkCmd.Dir = workDir
+		checkCmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
 		checkOut, checkErr := checkCmd.CombinedOutput()
 		if checkErr == nil {
-			t.Fatalf("expected check to fail when drift exists, but passed! Output: %s", string(checkOut))
+			t.Fatalf("expected check command to exit with code 1 due to drift, but succeeded!")
 		}
 		if !strings.Contains(string(checkOut), "Schema Drift Detected") {
-			t.Errorf("expected drift detected warning, got: %s", string(checkOut))
+			t.Errorf("expected Schema Drift Detected in check output, got: %s", string(checkOut))
 		}
 
-		// 2. Generate incremental migration
-		makeCmd := exec.Command(binPath, "make", "-n", "add-bio-and-sku", "--verify")
+		// 2. Generate incremental migration with --verify
+		makeCmd := exec.Command(binPath, "make", "--name=add-bio-and-sku", "--verify")
 		makeCmd.Dir = workDir
+		makeCmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
 		makeOut, makeErr := makeCmd.CombinedOutput()
 		if makeErr != nil {
-			t.Fatalf("incremental make failed: %s", string(makeOut))
+			t.Fatalf("incremental make failed: %s, err: %v", string(makeOut), makeErr)
 		}
 
-		migrations, _ := filepath.Glob(filepath.Join(workDir, "migrations", "*.js"))
+		// Check that second migration file exists
+		migrationsDir := filepath.Join(workDir, "migrations")
+		entries, _ := os.ReadDir(migrationsDir)
+		var migrations []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".js") {
+				migrations = append(migrations, filepath.Join(migrationsDir, e.Name()))
+			}
+		}
 		if len(migrations) != 2 {
 			t.Fatalf("expected 2 migration files, found %d", len(migrations))
 		}
@@ -236,14 +272,20 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 			t.Fatalf("failed to apply incremental migration: %v", err)
 		}
 
-		// 4. Verify that "bio" and "sku" now physically exist in real SQLite DB!
-		userCols, _ := getActualColumns("Users")
+		// 4. Verify that "bio" and "sku" now physically exist in real SQLite DB with strict error checking!
+		userCols, err := getActualColumns("Users")
+		if err != nil {
+			t.Fatalf("error checking Users columns: %v", err)
+		}
 		expectedUserCols := []string{"id", "email", "name", "bio"}
 		if strings.Join(userCols, ",") != strings.Join(expectedUserCols, ",") {
 			t.Errorf("Users columns mismatch after incremental migration! Expected %v, got %v", expectedUserCols, userCols)
 		}
 
-		prodCols, _ := getActualColumns("Products")
+		prodCols, err := getActualColumns("Products")
+		if err != nil {
+			t.Fatalf("error checking Products columns: %v", err)
+		}
 		expectedProdCols := []string{"id", "price", "title", "sku"}
 		if strings.Join(prodCols, ",") != strings.Join(expectedProdCols, ",") {
 			t.Errorf("Products columns mismatch after incremental migration! Expected %v, got %v", expectedProdCols, prodCols)
@@ -258,7 +300,10 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 		}
 
 		// Verify that "bio" and "sku" were cleanly removed and schema returned to initial state!
-		revertedUserCols, _ := getActualColumns("Users")
+		revertedUserCols, err := getActualColumns("Users")
+		if err != nil {
+			t.Fatalf("error checking reverted Users columns: %v", err)
+		}
 		initialUserCols := []string{"id", "email", "name"}
 		if strings.Join(revertedUserCols, ",") != strings.Join(initialUserCols, ",") {
 			t.Errorf("Rollback failed! Expected %v, got %v", initialUserCols, revertedUserCols)
@@ -335,6 +380,78 @@ module.exports = {
 		}
 		if !strings.Contains(string(cleanDocOut), "Clean bill of health") {
 			t.Errorf("expected clean bill of health, got: %s", string(cleanDocOut))
+		}
+	})
+
+	// ==========================================
+	// STAGE 6: CLI Subcommands & Edge Cases (status, dry-run, init, invalid args)
+	// ==========================================
+	t.Run("Stage 6: CLI subcommands and edge cases behave correctly", func(t *testing.T) {
+		// 1. Test status command
+		statusCmd := exec.Command(binPath, "status")
+		statusCmd.Dir = workDir
+		statusCmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		statusOut, statusErr := statusCmd.CombinedOutput()
+		if statusErr != nil {
+			t.Fatalf("status command failed: %v, out: %s", statusErr, string(statusOut))
+		}
+
+		// 2. Test make --dry-run
+		dryCmd := exec.Command(binPath, "make", "--dry-run")
+		dryCmd.Dir = workDir
+		dryCmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		dryOut, dryErr := dryCmd.CombinedOutput()
+		if dryErr != nil {
+			t.Fatalf("dry-run make failed: %v, out: %s", dryErr, string(dryOut))
+		}
+		if !strings.Contains(string(dryOut), "No changes detected") && !strings.Contains(string(dryOut), "DRY RUN") {
+			t.Errorf("expected dry run or no changes message, got: %s", string(dryOut))
+		}
+
+		// 3. Test invalid command -> Exits with code 1
+		invalidCmd := exec.Command(binPath, "nonexistent-cmd")
+		invalidCmd.Dir = workDir
+		_, invalidErr := invalidCmd.CombinedOutput()
+		if invalidErr == nil {
+			t.Errorf("expected nonexistent command to fail with non-zero exit code")
+		}
+
+		// 4. Test repair command
+		repairCmd := exec.Command(binPath, "repair", "--fix-down")
+		repairCmd.Dir = workDir
+		repairOut, repairErr := repairCmd.CombinedOutput()
+		if repairErr != nil {
+			t.Fatalf("repair command failed: %v, out: %s", repairErr, string(repairOut))
+		}
+		if !strings.Contains(string(repairOut), "Auditing and repairing migration files") {
+			t.Errorf("expected repair auditing message, got: %s", string(repairOut))
+		}
+	})
+
+	// ==========================================
+	// STAGE 7: Sequelize v7 Generator Integration
+	// ==========================================
+	t.Run("Stage 7: Generates valid v7 migration with target=v7", func(t *testing.T) {
+		// Make changes to trigger a diff
+		writeModels(
+			"  email: { type: DataTypes.STRING, allowNull: false, unique: true },\n  bio: { type: DataTypes.STRING(500), allowNull: true },\n  avatarUrl: { type: DataTypes.STRING(255), allowNull: true }",
+			"  price: { type: DataTypes.DECIMAL(10, 2), allowNull: false },\n  sku: { type: DataTypes.STRING(50), allowNull: true }",
+		)
+
+		v7Cmd := exec.Command(binPath, "make", "--name=add-v7-avatar", "--target=v7", "--dry-run")
+		v7Cmd.Dir = workDir
+		v7Cmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		v7Out, v7Err := v7Cmd.CombinedOutput()
+		if v7Err != nil {
+			t.Fatalf("v7 generation failed: %v, out: %s", v7Err, string(v7Out))
+		}
+
+		v7Str := string(v7Out)
+		if !strings.Contains(v7Str, "@sequelize/core") {
+			t.Errorf("expected @sequelize/core import in v7 generated code, got: %s", v7Str)
+		}
+		if !strings.Contains(v7Str, "DataTypes.") {
+			t.Errorf("expected DataTypes.* in v7 generated code, got: %s", v7Str)
 		}
 	})
 }

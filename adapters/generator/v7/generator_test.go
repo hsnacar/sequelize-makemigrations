@@ -35,6 +35,18 @@ func TestGeneratorV7(t *testing.T) {
 							Type:      domain.DataType{Name: "NUMERIC", Precision: 10, Scale: 2}, // Should map to DECIMAL in v7
 							AllowNull: false,
 						},
+						"role": {
+							Name:         "role",
+							Type:         domain.DataType{Name: "ENUM", Values: []string{"admin", "member"}},
+							DefaultValue: "member",
+							AllowNull:    false,
+						},
+						"isActive": {
+							Name:         "isActive",
+							Type:         domain.DataType{Name: "BOOLEAN"},
+							DefaultValue: true,
+							AllowNull:    false,
+						},
 					},
 				},
 			},
@@ -53,6 +65,10 @@ func TestGeneratorV7(t *testing.T) {
 			t.Errorf("Expected NUMERIC to map to DataTypes.DECIMAL(10, 2) in v7, got:\n%s", res.Content)
 		}
 
+		if !strings.Contains(res.Content, "DataTypes.ENUM('admin', 'member')") {
+			t.Errorf("Expected DataTypes.ENUM in v7, got:\n%s", res.Content)
+		}
+
 		if !strings.Contains(res.Content, "DataTypes.STRING(255)") {
 			t.Errorf("Expected DataTypes.STRING(255), got:\n%s", res.Content)
 		}
@@ -67,6 +83,72 @@ func TestGeneratorV7(t *testing.T) {
 
 		if !strings.Contains(res.Content, "await queryInterface.dropTable('Users');") {
 			t.Errorf("Expected down to drop Users table, got:\n%s", res.Content)
+		}
+	})
+
+	t.Run("Generates reversible changeColumn and dropTable in v7", func(t *testing.T) {
+		oldCol := domain.Column{
+			Name: "note",
+			Type: domain.DataType{Name: "STRING", Length: 50},
+		}
+		newCol := domain.Column{
+			Name: "note",
+			Type: domain.DataType{Name: "TEXT"},
+		}
+
+		droppedTable := domain.Table{
+			Name: "AuditLogs",
+			Columns: map[string]domain.Column{
+				"id": {Name: "id", Type: domain.DataType{Name: "INTEGER"}, PrimaryKey: true},
+			},
+		}
+
+		diff := &domain.Diff{
+			ColumnsModified: []domain.ColumnDiff{
+				{TableName: "Tasks", Column: newCol, OldColumn: &oldCol},
+			},
+			TablesDropped: []domain.Table{droppedTable},
+		}
+
+		res, err := gen.Generate(diff, ports.GeneratorOptions{MigrationName: "modify-tasks"})
+		if err != nil {
+			t.Fatalf("Generate failed: %v", err)
+		}
+
+		// UP operations
+		if !strings.Contains(res.Content, "await queryInterface.changeColumn('Tasks', 'note',") {
+			t.Errorf("Expected changeColumn in UP")
+		}
+		if !strings.Contains(res.Content, "await queryInterface.dropTable('AuditLogs');") {
+			t.Errorf("Expected dropTable in UP")
+		}
+
+		// DOWN operations
+		if !strings.Contains(res.Content, "await queryInterface.createTable('AuditLogs',") {
+			t.Errorf("Expected createTable in DOWN to restore dropped table")
+		}
+		if !strings.Contains(res.Content, "DataTypes.STRING(50)") {
+			t.Errorf("Expected OldColumn restored in DOWN")
+		}
+	})
+
+	t.Run("Covers all DataType branches in v7", func(t *testing.T) {
+		types := []domain.DataType{
+			{Name: "BIGINT"},
+			{Name: "FLOAT"},
+			{Name: "DOUBLE PRECISION"}, // should become DOUBLE
+			{Name: "DATE"},
+			{Name: "DATEONLY"},
+			{Name: "JSONTYPE"}, // should become JSON
+			{Name: "UUID"},
+			{Name: "CUSTOM_V7"},
+		}
+
+		for _, dt := range types {
+			str := formatDataType(dt)
+			if !strings.HasPrefix(str, "DataTypes.") {
+				t.Errorf("expected prefix DataTypes., got: %s", str)
+			}
 		}
 	})
 }

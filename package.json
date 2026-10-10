@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "build": "node scripts/build.js",
-    "test": "go test -v ./...",
+    "test": "go test -v ./... && node test/wrapper.test.js",
     "prepublishOnly": "npm run build"
   },
   "repository": {
