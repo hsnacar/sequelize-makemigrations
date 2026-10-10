@@ -1,12 +1,16 @@
 # Node
 node_modules/
+**/node_modules/
 npm-debug.log*
 
 # Test and sandbox artifacts
 tmp/
 *.db
 *.sqlite
+*.sqlite3
 .seq-schema.json.bak
+examples/**/migrations/
+examples/**/.seq-schema.json
 
 # OS
 .DS_Store

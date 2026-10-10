@@ -15,6 +15,7 @@ import (
 	"github.com/hsnacar/sequelize-makemigrations/core/diff"
 	"github.com/hsnacar/sequelize-makemigrations/core/domain"
 	"github.com/hsnacar/sequelize-makemigrations/core/ports"
+	"github.com/hsnacar/sequelize-makemigrations/core/repair"
 )
 
 const version = "1.0.0"
@@ -30,6 +31,10 @@ func main() {
 	switch command {
 	case "make", "makemigrations":
 		runMake(os.Args[2:])
+	case "check", "lint":
+		runCheck(os.Args[2:])
+	case "repair":
+		runRepair(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
 	case "init":
@@ -47,13 +52,15 @@ func main() {
 
 func printUsage() {
 	fmt.Println(`seq-migrate (sequelize-makemigrations) 🚀
-Automated, zero-risk migration generator for Sequelize.
+Automated, zero-risk migration generator and health auditor for Sequelize.
 
 Usage:
   seq-migrate <command> [options]
 
 Commands:
   make, makemigrations   Generate a new migration from model changes
+  check, lint            Audit consistency between models, snapshot, and migration files (CI/CD friendly)
+  repair                 Fix broken migrations or re-sync corrupted schema snapshots
   status                 Show pending model differences vs current schema
   init                   Snapshot current models as initial schema baseline
   version                Print CLI version
@@ -68,10 +75,21 @@ Options for 'make':
   --dry-run              Preview diff and migration code without saving files
   --verify               Verify migration on an ephemeral shadow DB sandbox before writing
 
+Options for 'check':
+  -m, --models           Path to Sequelize models
+  -d, --migrations-dir   Directory containing migration files (default: "migrations")
+  -s, --schema-file      Path to schema snapshot (default: ".seq-schema.json")
+
+Options for 'repair':
+  --snapshot             Rebuild .seq-schema.json directly from current models
+  --fix-down             Add stub 'down' rollback handlers to migration files missing them
+  -m, --models           Path to Sequelize models
+  -d, --migrations-dir   Directory containing migration files (default: "migrations")
+
 Examples:
   npx seq-migrate make -n add-user-bio --verify
-  npx seq-migrate make --dry-run
-  npx seq-migrate status`)
+  npx seq-migrate check
+  npx seq-migrate repair --fix-down`)
 }
 
 func runMake(args []string) {
@@ -183,6 +201,127 @@ func runMake(args []string) {
 
 	fmt.Printf("\n🎉 Migration created: %s\n", targetFilePath)
 	fmt.Printf("💾 Updated schema snapshot: %s\n", schemaFile)
+}
+
+func runCheck(args []string) {
+	fs := flag.NewFlagSet("check", flag.ExitOnError)
+	var (
+		modelsPath    string
+		migrationsDir string
+		schemaFile    string
+	)
+	fs.StringVar(&modelsPath, "models", "", "Path to models")
+	fs.StringVar(&modelsPath, "m", "", "Path to models")
+	fs.StringVar(&migrationsDir, "migrations-dir", "migrations", "Migrations directory")
+	fs.StringVar(&migrationsDir, "d", "migrations", "Migrations directory")
+	fs.StringVar(&schemaFile, "schema-file", ".seq-schema.json", "Schema snapshot file")
+	fs.StringVar(&schemaFile, "s", ".seq-schema.json", "Schema snapshot file")
+	fs.Parse(args)
+
+	cwd, _ := os.Getwd()
+	hasError := false
+
+	fmt.Println("🔎 Checking model and migration consistency...")
+
+	// 1. Audit existing migration files for missing 'down' / syntax issues
+	issues, err := repair.AuditMigrations(migrationsDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to read migrations directory: %v\n", err)
+	} else if len(issues) > 0 {
+		fmt.Printf("\n⚠️ Found %d issue(s) in migration files:\n", len(issues))
+		for _, issue := range issues {
+			fmt.Printf("  [%s] %s: %s\n", issue.Severity, issue.File, issue.Issue)
+			if issue.Severity == "ERROR" {
+				hasError = true
+			}
+		}
+	} else {
+		fmt.Println("✅ Existing migration files are structurally valid.")
+	}
+
+	// 2. Check for schema drift between models and snapshot
+	oldSchema := loadSchemaSnapshot(schemaFile)
+	ext := extractor.NewNodeExtractor(modelsPath)
+	newSchema, err := ext.ExtractSchema(context.Background(), cwd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ Error inspecting models: %v\n", err)
+		os.Exit(1)
+	}
+
+	delta := diff.NewEngine().Compare(oldSchema, newSchema)
+	if !delta.IsEmpty() {
+		fmt.Println("\n❌ Schema Drift Detected! You have unmigrated model changes:")
+		printDiffSummary(delta)
+		fmt.Println("👉 Run 'npx seq-migrate make' to generate pending migrations.")
+		hasError = true
+	} else {
+		fmt.Println("✅ Model definitions and schema snapshot are 100% in sync.")
+	}
+
+	if hasError {
+		os.Exit(1)
+	}
+}
+
+func runRepair(args []string) {
+	fs := flag.NewFlagSet("repair", flag.ExitOnError)
+	var (
+		fixSnapshot   bool
+		fixDown       bool
+		modelsPath    string
+		migrationsDir string
+		schemaFile    string
+	)
+	fs.BoolVar(&fixSnapshot, "snapshot", false, "Rebuild schema snapshot from models")
+	fs.BoolVar(&fixDown, "fix-down", false, "Add missing 'down' rollback stubs")
+	fs.StringVar(&modelsPath, "models", "", "Path to models")
+	fs.StringVar(&modelsPath, "m", "", "Path to models")
+	fs.StringVar(&migrationsDir, "migrations-dir", "migrations", "Migrations directory")
+	fs.StringVar(&migrationsDir, "d", "migrations", "Migrations directory")
+	fs.StringVar(&schemaFile, "schema-file", ".seq-schema.json", "Schema snapshot file")
+	fs.StringVar(&schemaFile, "s", ".seq-schema.json", "Schema snapshot file")
+	fs.Parse(args)
+
+	cwd, _ := os.Getwd()
+
+	if !fixSnapshot && !fixDown {
+		fmt.Println("Please specify what to repair:")
+		fmt.Println("  --snapshot   Rebuild .seq-schema.json from current models")
+		fmt.Println("  --fix-down   Add stub 'down' handlers to incomplete migration files")
+		return
+	}
+
+	if fixDown {
+		fmt.Println("🛠️ Auditing and repairing migration files...")
+		issues, err := repair.AuditMigrations(migrationsDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error auditing migrations: %v\n", err)
+		} else {
+			repairedCount := 0
+			for _, issue := range issues {
+				if issue.CanAutoFix {
+					fullPath := filepath.Join(migrationsDir, issue.File)
+					if err := repair.RepairMissingDown(fullPath); err == nil {
+						fmt.Printf("  [fixed] Added 'down' handler to %s\n", issue.File)
+						repairedCount++
+					}
+				}
+			}
+			fmt.Printf("✅ Repaired %d migration file(s).\n", repairedCount)
+		}
+	}
+
+	if fixSnapshot {
+		fmt.Println("🔄 Rebuilding schema snapshot baseline...")
+		ext := extractor.NewNodeExtractor(modelsPath)
+		newSchema, err := ext.ExtractSchema(context.Background(), cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Error extracting models: %v\n", err)
+			os.Exit(1)
+		}
+		saveSchemaSnapshot(schemaFile, newSchema)
+		fmt.Printf("✅ Rebuilt %s successfully with %d tables.\n", schemaFile, len(newSchema.Tables))
+	}
 }
 
 func runStatus(args []string) {

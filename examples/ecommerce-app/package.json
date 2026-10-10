@@ -1,0 +1,9 @@
+{
+  "name": "ecommerce-example-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "sequelize": "^6.37.5",
+    "sqlite3": "^5.1.7"
+  }
+}
