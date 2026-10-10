@@ -166,6 +166,35 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 		return indexes, nil
 	}
 
+	// Helper to query actual database table foreign keys from SQLite with strict error checking
+	getActualForeignKeys := func(tableName string) ([]map[string]interface{}, error) {
+		script := fmt.Sprintf(`'use strict';
+const { Sequelize } = require('sequelize');
+const sequelize = new Sequelize({ dialect: 'sqlite', storage: %q, logging: false });
+
+async function inspect() {
+  const [results] = await sequelize.query("PRAGMA foreign_key_list(" + %q + ");");
+  const list = Array.isArray(results) ? results : (results ? [results] : []);
+  console.log(JSON.stringify(list));
+  await sequelize.close();
+}
+inspect().catch(err => { console.error(err); process.exit(1); });
+`, dbFile, tableName)
+
+		cmd := exec.Command("node", "-e", script)
+		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("foreign key inspection failed: %s", string(out))
+		}
+		var fks []map[string]interface{}
+		if err := json.Unmarshal(out, &fks); err != nil {
+			return nil, fmt.Errorf("parse error: %w (out: %s)", err, string(out))
+		}
+		return fks, nil
+	}
+
 	// ==========================================
 	// STAGE 1: Initial Migration Creation
 	// ==========================================
@@ -424,6 +453,22 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 			t.Errorf("expected ownerId physically in SQLite Products table, got: %v", prodCols)
 		}
 
+		// Verify foreign key relationship is physically recorded in SQLite PRAGMA foreign_key_list
+		fks, err := getActualForeignKeys("Products")
+		if err != nil {
+			t.Fatalf("error checking Products foreign keys: %v", err)
+		}
+		hasFK := false
+		for _, fk := range fks {
+			if fk["table"] == "Users" && fk["from"] == "ownerId" && fk["to"] == "id" {
+				hasFK = true
+				break
+			}
+		}
+		if !hasFK {
+			t.Errorf("expected physical foreign key pointing to Users(id) in PRAGMA foreign_key_list, got: %v", fks)
+		}
+
 		// 5. Apply DOWN (Rollback) on real SQLite DB
 		if err := applyMigration(thirdMigration, "down"); err != nil {
 			t.Fatalf("failed to rollback index and fk migration: %v", err)
@@ -448,6 +493,17 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 		for _, col := range revertedProdCols {
 			if col == "ownerId" {
 				t.Errorf("ownerId was not removed on rollback! Found: %v", revertedProdCols)
+			}
+		}
+
+		// Verify foreign key relationship physically removed from SQLite on rollback!
+		revertedFks, err := getActualForeignKeys("Products")
+		if err != nil {
+			t.Fatalf("error checking reverted foreign keys: %v", err)
+		}
+		for _, fk := range revertedFks {
+			if fk["from"] == "ownerId" {
+				t.Errorf("foreign key for ownerId was not removed on rollback! Found: %v", revertedFks)
 			}
 		}
 	})
