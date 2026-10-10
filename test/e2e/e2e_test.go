@@ -45,8 +45,8 @@ func TestEndToEndSequelizeWorkflow(t *testing.T) {
 
 	dbFile := filepath.Join(workDir, "real_database.sqlite")
 
-	// Helper to write models/index.js
-	writeModels := func(userFields, productFields string) {
+	// Helper to write models/index.js with optional extra table options (e.g. indexes)
+	writeModelsWithOptions := func(userFields, productFields, userExtraOpts, productExtraOpts string) {
 		content := fmt.Sprintf(`'use strict';
 const { Sequelize, DataTypes } = require('sequelize');
 
@@ -60,21 +60,25 @@ const User = sequelize.define('User', {
   id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   name: { type: DataTypes.STRING, allowNull: false },
 %s
-}, { tableName: 'Users', timestamps: false });
+}, { tableName: 'Users', timestamps: false %s });
 
 const Product = sequelize.define('Product', {
   id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
   title: { type: DataTypes.STRING, allowNull: false },
 %s
-}, { tableName: 'Products', timestamps: false });
+}, { tableName: 'Products', timestamps: false %s });
 
 module.exports = { sequelize, User, Product };
-`, dbFile, userFields, productFields)
+`, dbFile, userFields, userExtraOpts, productFields, productExtraOpts)
 
 		err := os.WriteFile(filepath.Join(modelsDir, "index.js"), []byte(content), 0644)
 		if err != nil {
 			t.Fatalf("failed to write models: %v", err)
 		}
+	}
+
+	writeModels := func(userFields, productFields string) {
+		writeModelsWithOptions(userFields, productFields, "", "")
 	}
 
 	// Helper to execute generated migrations on the real SQLite DB
@@ -132,6 +136,34 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 			return nil, fmt.Errorf("parse error: %w (out: %s)", err, string(out))
 		}
 		return cols, nil
+	}
+
+	// Helper to query actual database table indexes from SQLite with strict error checking
+	getActualIndexes := func(tableName string) ([]string, error) {
+		script := fmt.Sprintf(`'use strict';
+const { Sequelize } = require('sequelize');
+const sequelize = new Sequelize({ dialect: 'sqlite', storage: %q, logging: false });
+
+async function inspect() {
+  const [results] = await sequelize.query("PRAGMA index_list(" + %q + ");");
+  console.log(JSON.stringify(results.map(r => r.name)));
+  await sequelize.close();
+}
+inspect().catch(err => { console.error(err); process.exit(1); });
+`, dbFile, tableName)
+
+		cmd := exec.Command("node", "-e", script)
+		cmd.Dir = workDir
+		cmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("index inspection failed: %s", string(out))
+		}
+		var indexes []string
+		if err := json.Unmarshal(out, &indexes); err != nil {
+			return nil, fmt.Errorf("parse error: %w (out: %s)", err, string(out))
+		}
+		return indexes, nil
 	}
 
 	// ==========================================
@@ -307,6 +339,116 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 		initialUserCols := []string{"id", "email", "name"}
 		if strings.Join(revertedUserCols, ",") != strings.Join(initialUserCols, ",") {
 			t.Errorf("Rollback failed! Expected %v, got %v", initialUserCols, revertedUserCols)
+		}
+	})
+
+	// ==========================================
+	// STAGE 4: Real Database Index and Foreign Key Migration & Rollback
+	// ==========================================
+	t.Run("Stage 4: Real database index and foreign key creation and rollback", func(t *testing.T) {
+		// Update models with an index on Users and a Foreign Key on Products
+		writeModelsWithOptions(
+			"  email: { type: DataTypes.STRING, allowNull: false, unique: true },\n  bio: { type: DataTypes.STRING(500), allowNull: true }",
+			"  price: { type: DataTypes.DECIMAL(10, 2), allowNull: false },\n  sku: { type: DataTypes.STRING(50), allowNull: true },\n  ownerId: { type: DataTypes.INTEGER, references: { model: 'Users', key: 'id' } }",
+			", indexes: [{ name: 'idx_users_email_custom', fields: ['email'] }]",
+			"",
+		)
+
+		// 1. Generate migration with --verify
+		makeCmd := exec.Command(binPath, "make", "--name=add-index-and-fk", "--verify")
+		makeCmd.Dir = workDir
+		makeCmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		makeOut, makeErr := makeCmd.CombinedOutput()
+		if makeErr != nil {
+			t.Fatalf("make with index and fk failed: %s, err: %v", string(makeOut), makeErr)
+		}
+
+		// Find the third migration file
+		migrationsDir := filepath.Join(workDir, "migrations")
+		entries, _ := os.ReadDir(migrationsDir)
+		var migrations []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".js") {
+				migrations = append(migrations, filepath.Join(migrationsDir, e.Name()))
+			}
+		}
+		if len(migrations) < 3 {
+			t.Fatalf("expected at least 3 migration files, found %d", len(migrations))
+		}
+		thirdMigration := migrations[len(migrations)-1]
+
+		// 2. Check generated code contains addIndex and references
+		content, _ := os.ReadFile(thirdMigration)
+		migStr := string(content)
+		if !strings.Contains(migStr, "addIndex('Users'") || !strings.Contains(migStr, "idx_users_email_custom") {
+			t.Errorf("expected addIndex for idx_users_email_custom in generated migration, got: %s", migStr)
+		}
+		if !strings.Contains(migStr, "model: 'Users'") || !strings.Contains(migStr, "key: 'id'") {
+			t.Errorf("expected foreign key references block in generated migration, got: %s", migStr)
+		}
+
+		// 3. Apply UP to real SQLite DB
+		if err := applyMigration(thirdMigration, "up"); err != nil {
+			t.Fatalf("failed to apply index and fk migration: %v", err)
+		}
+
+		// 4. Verify index physically exists in SQLite!
+		indexes, err := getActualIndexes("Users")
+		if err != nil {
+			t.Fatalf("error checking Users indexes: %v", err)
+		}
+		hasIndex := false
+		for _, idx := range indexes {
+			if idx == "idx_users_email_custom" {
+				hasIndex = true
+				break
+			}
+		}
+		if !hasIndex {
+			t.Errorf("expected idx_users_email_custom physically in SQLite indexes, got: %v", indexes)
+		}
+
+		// Verify ownerId column physically exists in SQLite Products table
+		prodCols, err := getActualColumns("Products")
+		if err != nil {
+			t.Fatalf("error checking Products columns: %v", err)
+		}
+		hasOwnerId := false
+		for _, col := range prodCols {
+			if col == "ownerId" {
+				hasOwnerId = true
+				break
+			}
+		}
+		if !hasOwnerId {
+			t.Errorf("expected ownerId physically in SQLite Products table, got: %v", prodCols)
+		}
+
+		// 5. Apply DOWN (Rollback) on real SQLite DB
+		if err := applyMigration(thirdMigration, "down"); err != nil {
+			t.Fatalf("failed to rollback index and fk migration: %v", err)
+		}
+
+		// 6. Verify index physically removed from SQLite!
+		revertedIndexes, err := getActualIndexes("Users")
+		if err != nil {
+			t.Fatalf("error checking reverted Users indexes: %v", err)
+		}
+		for _, idx := range revertedIndexes {
+			if idx == "idx_users_email_custom" {
+				t.Errorf("idx_users_email_custom was not removed on rollback! Found: %v", revertedIndexes)
+			}
+		}
+
+		// Verify ownerId physically removed from SQLite!
+		revertedProdCols, err := getActualColumns("Products")
+		if err != nil {
+			t.Fatalf("error checking reverted Products columns: %v", err)
+		}
+		for _, col := range revertedProdCols {
+			if col == "ownerId" {
+				t.Errorf("ownerId was not removed on rollback! Found: %v", revertedProdCols)
+			}
 		}
 	})
 

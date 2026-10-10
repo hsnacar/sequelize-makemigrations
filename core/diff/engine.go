@@ -121,6 +121,9 @@ func hasColumnChanged(oldCol, newCol domain.Column) bool {
 	if oldCol.Unique != newCol.Unique {
 		return true
 	}
+	if !reflect.DeepEqual(oldCol.References, newCol.References) {
+		return true
+	}
 	return false
 }
 

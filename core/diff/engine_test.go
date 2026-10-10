@@ -120,6 +120,13 @@ func TestDiffEngine(t *testing.T) {
 		if !hasColumnChanged(colBase, colUniqChanged) {
 			t.Errorf("expected unique change to be detected")
 		}
+
+		// References changed
+		colRefChanged := colBase
+		colRefChanged.References = &domain.Reference{Model: "Users", Key: "id"}
+		if !hasColumnChanged(colBase, colRefChanged) {
+			t.Errorf("expected foreign key reference change to be detected")
+		}
 	})
 
 	t.Run("Detects added and dropped indexes", func(t *testing.T) {
