@@ -14,6 +14,12 @@ type DataType struct {
 	Values    []string      `json:"values,omitempty"`    // for ENUM
 }
 
+// Reference represents a foreign key target.
+type Reference struct {
+	Model string `json:"model"`
+	Key   string `json:"key"`
+}
+
 // Column represents a single database column in the Schema IR.
 type Column struct {
 	Name          string      `json:"name"`
@@ -24,6 +30,7 @@ type Column struct {
 	DefaultValue  interface{} `json:"defaultValue,omitempty"`
 	Unique        bool        `json:"unique,omitempty"`
 	Comment       string      `json:"comment,omitempty"`
+	References    *Reference  `json:"references,omitempty"`
 }
 
 // Index represents a table index.

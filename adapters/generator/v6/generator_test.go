@@ -229,4 +229,76 @@ func TestGeneratorV6(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("Generates reversible addIndex and removeIndex", func(t *testing.T) {
+		diff := &domain.Diff{
+			IndexesAdded: []domain.IndexDiff{
+				{
+					TableName: "Users",
+					Index: domain.Index{
+						Name:   "users_email_idx",
+						Fields: []string{"email"},
+						Unique: true,
+					},
+				},
+			},
+			IndexesDropped: []domain.IndexDiff{
+				{
+					TableName: "Orders",
+					Index: domain.Index{
+						Name:   "orders_status_idx",
+						Fields: []string{"status"},
+					},
+				},
+			},
+		}
+
+		res, err := gen.Generate(diff, ports.GeneratorOptions{MigrationName: "manage-indexes"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		// UP operations
+		if !strings.Contains(res.Content, "await queryInterface.addIndex('Users', ['email']") {
+			t.Errorf("expected addIndex in UP, got: %s", res.Content)
+		}
+		if !strings.Contains(res.Content, "await queryInterface.removeIndex('Orders', 'orders_status_idx');") {
+			t.Errorf("expected removeIndex in UP, got: %s", res.Content)
+		}
+
+		// DOWN operations (Exact Reverse)
+		if !strings.Contains(res.Content, "await queryInterface.addIndex('Orders', ['status']") {
+			t.Errorf("expected addIndex restored in DOWN, got: %s", res.Content)
+		}
+		if !strings.Contains(res.Content, "await queryInterface.removeIndex('Users', 'users_email_idx');") {
+			t.Errorf("expected removeIndex in DOWN, got: %s", res.Content)
+		}
+	})
+
+	t.Run("Generates foreign key references in column attributes", func(t *testing.T) {
+		diff := &domain.Diff{
+			ColumnsAdded: []domain.ColumnDiff{
+				{
+					TableName: "Orders",
+					Column: domain.Column{
+						Name: "userId",
+						Type: domain.DataType{Name: "INTEGER"},
+						References: &domain.Reference{
+							Model: "Users",
+							Key:   "id",
+						},
+					},
+				},
+			},
+		}
+
+		res, err := gen.Generate(diff, ports.GeneratorOptions{MigrationName: "add-order-fk"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(res.Content, "model: 'Users'") || !strings.Contains(res.Content, "key: 'id'") {
+			t.Errorf("expected references block with Users.id in generated code, got: %s", res.Content)
+		}
+	})
 }

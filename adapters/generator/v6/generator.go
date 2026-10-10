@@ -48,13 +48,25 @@ func (g *Generator) Generate(diff *domain.Diff, opts ports.GeneratorOptions) (*p
 		upBuf.WriteString("\n\n")
 	}
 
-	// 4. Drop Columns
+	// 4. Add Indexes
+	for _, idxDiff := range diff.IndexesAdded {
+		upBuf.WriteString(formatAddIndex(idxDiff.TableName, idxDiff.Index))
+		upBuf.WriteString("\n\n")
+	}
+
+	// 5. Remove Dropped Indexes
+	for _, idxDiff := range diff.IndexesDropped {
+		upBuf.WriteString(formatRemoveIndex(idxDiff.TableName, idxDiff.Index.Name))
+		upBuf.WriteString("\n\n")
+	}
+
+	// 6. Drop Columns
 	for _, colDiff := range diff.ColumnsDropped {
 		upBuf.WriteString(formatRemoveColumn(colDiff.TableName, colDiff.Column.Name))
 		upBuf.WriteString("\n\n")
 	}
 
-	// 5. Drop Tables
+	// 7. Drop Tables
 	for _, table := range diff.TablesDropped {
 		upBuf.WriteString(formatDropTable(table.Name))
 		upBuf.WriteString("\n\n")
@@ -79,7 +91,21 @@ func (g *Generator) Generate(diff *domain.Diff, opts ports.GeneratorOptions) (*p
 		downBuf.WriteString("\n\n")
 	}
 
-	// 3. Revert Modified Columns (reverting to OldColumn)
+	// 3. Re-add Dropped Indexes
+	for i := len(diff.IndexesDropped) - 1; i >= 0; i-- {
+		idxDiff := diff.IndexesDropped[i]
+		downBuf.WriteString(formatAddIndex(idxDiff.TableName, idxDiff.Index))
+		downBuf.WriteString("\n\n")
+	}
+
+	// 4. Remove Added Indexes
+	for i := len(diff.IndexesAdded) - 1; i >= 0; i-- {
+		idxDiff := diff.IndexesAdded[i]
+		downBuf.WriteString(formatRemoveIndex(idxDiff.TableName, idxDiff.Index.Name))
+		downBuf.WriteString("\n\n")
+	}
+
+	// 5. Revert Modified Columns (reverting to OldColumn)
 	for i := len(diff.ColumnsModified) - 1; i >= 0; i-- {
 		col := diff.ColumnsModified[i]
 		if col.OldColumn != nil {
@@ -88,14 +114,14 @@ func (g *Generator) Generate(diff *domain.Diff, opts ports.GeneratorOptions) (*p
 		}
 	}
 
-	// 4. Remove Added Columns
+	// 6. Remove Added Columns
 	for i := len(diff.ColumnsAdded) - 1; i >= 0; i-- {
 		col := diff.ColumnsAdded[i]
 		downBuf.WriteString(formatRemoveColumn(col.TableName, col.Column.Name))
 		downBuf.WriteString("\n\n")
 	}
 
-	// 5. Drop Created Tables
+	// 7. Drop Created Tables
 	for i := len(diff.TablesCreated) - 1; i >= 0; i-- {
 		downBuf.WriteString(formatDropTable(diff.TablesCreated[i].Name))
 		downBuf.WriteString("\n\n")
@@ -144,18 +170,10 @@ func formatDataType(dt domain.DataType, seqVar string) string {
 			return fmt.Sprintf("%s.STRING(%d)", seqVar, dt.Length)
 		}
 		return fmt.Sprintf("%s.STRING", seqVar)
-	case "TEXT":
-		return fmt.Sprintf("%s.TEXT", seqVar)
 	case "INTEGER":
 		return fmt.Sprintf("%s.INTEGER", seqVar)
 	case "BIGINT":
 		return fmt.Sprintf("%s.BIGINT", seqVar)
-	case "BOOLEAN":
-		return fmt.Sprintf("%s.BOOLEAN", seqVar)
-	case "DATE":
-		return fmt.Sprintf("%s.DATE", seqVar)
-	case "DATEONLY":
-		return fmt.Sprintf("%s.DATEONLY", seqVar)
 	case "FLOAT":
 		return fmt.Sprintf("%s.FLOAT", seqVar)
 	case "DOUBLE":
@@ -165,6 +183,14 @@ func formatDataType(dt domain.DataType, seqVar string) string {
 			return fmt.Sprintf("%s.DECIMAL(%d, %d)", seqVar, dt.Precision, dt.Scale)
 		}
 		return fmt.Sprintf("%s.DECIMAL", seqVar)
+	case "BOOLEAN":
+		return fmt.Sprintf("%s.BOOLEAN", seqVar)
+	case "DATE":
+		return fmt.Sprintf("%s.DATE", seqVar)
+	case "DATEONLY":
+		return fmt.Sprintf("%s.DATEONLY", seqVar)
+	case "TEXT":
+		return fmt.Sprintf("%s.TEXT", seqVar)
 	case "JSON":
 		return fmt.Sprintf("%s.JSON", seqVar)
 	case "UUID":
@@ -179,7 +205,7 @@ func formatDataType(dt domain.DataType, seqVar string) string {
 		}
 		return fmt.Sprintf("%s.ENUM", seqVar)
 	default:
-		return fmt.Sprintf("%s.STRING", seqVar)
+		return fmt.Sprintf("%s.%s", seqVar, name)
 	}
 }
 
@@ -197,6 +223,12 @@ func formatColumnAttributes(col domain.Column, seqVar string) string {
 	if col.Unique {
 		sb.WriteString("      unique: true,\n")
 	}
+	if col.References != nil && col.References.Model != "" {
+		sb.WriteString("      references: {\n")
+		sb.WriteString(fmt.Sprintf("        model: '%s',\n", col.References.Model))
+		sb.WriteString(fmt.Sprintf("        key: '%s',\n", col.References.Key))
+		sb.WriteString("      },\n")
+	}
 	if col.DefaultValue != nil {
 		switch v := col.DefaultValue.(type) {
 		case string:
@@ -212,7 +244,6 @@ func formatColumnAttributes(col domain.Column, seqVar string) string {
 }
 
 func formatCreateTable(table domain.Table, seqVar string) string {
-	// Sort column keys deterministically: primary keys first, then alphabetically
 	var primaryKeys []string
 	var otherKeys []string
 
@@ -249,4 +280,27 @@ func formatRemoveColumn(tableName, colName string) string {
 
 func formatDropTable(tableName string) string {
 	return fmt.Sprintf("await queryInterface.dropTable('%s');", tableName)
+}
+
+func formatAddIndex(tableName string, idx domain.Index) string {
+	quotedFields := make([]string, len(idx.Fields))
+	for i, f := range idx.Fields {
+		quotedFields[i] = fmt.Sprintf("'%s'", f)
+	}
+	var opts []string
+	if idx.Name != "" {
+		opts = append(opts, fmt.Sprintf("name: '%s'", idx.Name))
+	}
+	if idx.Unique {
+		opts = append(opts, "unique: true")
+	}
+	optStr := ""
+	if len(opts) > 0 {
+		optStr = fmt.Sprintf(", {\n      %s\n    }", strings.Join(opts, ",\n      "))
+	}
+	return fmt.Sprintf("await queryInterface.addIndex('%s', [%s]%s);", tableName, strings.Join(quotedFields, ", "), optStr)
+}
+
+func formatRemoveIndex(tableName, indexName string) string {
+	return fmt.Sprintf("await queryInterface.removeIndex('%s', '%s');", tableName, indexName)
 }

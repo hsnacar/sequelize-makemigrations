@@ -81,7 +81,11 @@ async function extractSchema() {
         autoIncrement: Boolean(attr.autoIncrement),
         unique: Boolean(attr.unique),
         defaultValue: attr.defaultValue !== undefined ? attr.defaultValue : null,
-        comment: attr.comment || ''
+        comment: attr.comment || '',
+        references: attr.references ? {
+          model: typeof attr.references.model === 'string' ? attr.references.model : (attr.references.model && (attr.references.model.tableName || attr.references.model.name)),
+          key: attr.references.key || 'id'
+        } : null
       };
     }
 

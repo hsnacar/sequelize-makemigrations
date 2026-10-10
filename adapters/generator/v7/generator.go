@@ -48,13 +48,25 @@ func (g *Generator) Generate(diff *domain.Diff, opts ports.GeneratorOptions) (*p
 		upBuf.WriteString("\n\n")
 	}
 
-	// 4. Drop Columns
+	// 4. Add Indexes
+	for _, idxDiff := range diff.IndexesAdded {
+		upBuf.WriteString(formatAddIndex(idxDiff.TableName, idxDiff.Index))
+		upBuf.WriteString("\n\n")
+	}
+
+	// 5. Remove Dropped Indexes
+	for _, idxDiff := range diff.IndexesDropped {
+		upBuf.WriteString(formatRemoveIndex(idxDiff.TableName, idxDiff.Index.Name))
+		upBuf.WriteString("\n\n")
+	}
+
+	// 6. Drop Columns
 	for _, colDiff := range diff.ColumnsDropped {
 		upBuf.WriteString(formatRemoveColumn(colDiff.TableName, colDiff.Column.Name))
 		upBuf.WriteString("\n\n")
 	}
 
-	// 5. Drop Tables
+	// 7. Drop Tables
 	for _, table := range diff.TablesDropped {
 		upBuf.WriteString(formatDropTable(table.Name))
 		upBuf.WriteString("\n\n")
@@ -71,11 +83,29 @@ func (g *Generator) Generate(diff *domain.Diff, opts ports.GeneratorOptions) (*p
 	// 2. Re-add Dropped Columns (restoring OldColumn)
 	for i := len(diff.ColumnsDropped) - 1; i >= 0; i-- {
 		col := diff.ColumnsDropped[i]
-		downBuf.WriteString(formatAddColumn(col.TableName, col.Column))
+		if col.OldColumn != nil {
+			downBuf.WriteString(formatAddColumn(col.TableName, *col.OldColumn))
+		} else {
+			downBuf.WriteString(formatAddColumn(col.TableName, col.Column))
+		}
 		downBuf.WriteString("\n\n")
 	}
 
-	// 3. Revert Modified Columns (reverting to OldColumn)
+	// 3. Re-add Dropped Indexes
+	for i := len(diff.IndexesDropped) - 1; i >= 0; i-- {
+		idxDiff := diff.IndexesDropped[i]
+		downBuf.WriteString(formatAddIndex(idxDiff.TableName, idxDiff.Index))
+		downBuf.WriteString("\n\n")
+	}
+
+	// 4. Remove Added Indexes
+	for i := len(diff.IndexesAdded) - 1; i >= 0; i-- {
+		idxDiff := diff.IndexesAdded[i]
+		downBuf.WriteString(formatRemoveIndex(idxDiff.TableName, idxDiff.Index.Name))
+		downBuf.WriteString("\n\n")
+	}
+
+	// 5. Revert Modified Columns (reverting to OldColumn)
 	for i := len(diff.ColumnsModified) - 1; i >= 0; i-- {
 		col := diff.ColumnsModified[i]
 		if col.OldColumn != nil {
@@ -84,14 +114,14 @@ func (g *Generator) Generate(diff *domain.Diff, opts ports.GeneratorOptions) (*p
 		}
 	}
 
-	// 4. Remove Added Columns
+	// 6. Remove Added Columns
 	for i := len(diff.ColumnsAdded) - 1; i >= 0; i-- {
 		col := diff.ColumnsAdded[i]
 		downBuf.WriteString(formatRemoveColumn(col.TableName, col.Column.Name))
 		downBuf.WriteString("\n\n")
 	}
 
-	// 5. Drop Created Tables
+	// 7. Drop Created Tables
 	for i := len(diff.TablesCreated) - 1; i >= 0; i-- {
 		downBuf.WriteString(formatDropTable(diff.TablesCreated[i].Name))
 		downBuf.WriteString("\n\n")
@@ -135,7 +165,6 @@ func indent(text, prefix string) string {
 
 func formatDataType(dt domain.DataType) string {
 	name := strings.ToUpper(dt.Name)
-	// v7 specific mappings (deprecated v6 types converted to modern v7)
 	switch name {
 	case "NUMERIC":
 		name = "DECIMAL"
@@ -191,41 +220,43 @@ func formatDataType(dt domain.DataType) string {
 }
 
 func formatColumnAttributes(col domain.Column) string {
-	parts := []string{
-		fmt.Sprintf("type: %s", formatDataType(col.Type)),
-	}
-
+	var sb strings.Builder
+	sb.WriteString("{\n")
+	sb.WriteString(fmt.Sprintf("      type: %s,\n", formatDataType(col.Type)))
+	sb.WriteString(fmt.Sprintf("      allowNull: %t,\n", col.AllowNull))
 	if col.PrimaryKey {
-		parts = append(parts, "primaryKey: true")
+		sb.WriteString("      primaryKey: true,\n")
 	}
 	if col.AutoIncrement {
-		parts = append(parts, "autoIncrement: true")
-	}
-	if !col.AllowNull {
-		parts = append(parts, "allowNull: false")
-	} else {
-		parts = append(parts, "allowNull: true")
+		sb.WriteString("      autoIncrement: true,\n")
 	}
 	if col.Unique {
-		parts = append(parts, "unique: true")
+		sb.WriteString("      unique: true,\n")
+	}
+	if col.References != nil && col.References.Model != "" {
+		sb.WriteString("      references: {\n")
+		sb.WriteString(fmt.Sprintf("        model: '%s',\n", col.References.Model))
+		sb.WriteString(fmt.Sprintf("        key: '%s',\n", col.References.Key))
+		sb.WriteString("      },\n")
 	}
 	if col.DefaultValue != nil {
 		switch v := col.DefaultValue.(type) {
 		case string:
-			parts = append(parts, fmt.Sprintf("defaultValue: '%s'", v))
+			sb.WriteString(fmt.Sprintf("      defaultValue: '%s',\n", v))
+		case bool:
+			sb.WriteString(fmt.Sprintf("      defaultValue: %t,\n", v))
 		default:
-			parts = append(parts, fmt.Sprintf("defaultValue: %v", v))
+			sb.WriteString(fmt.Sprintf("      defaultValue: %v,\n", v))
 		}
 	}
-
-	return fmt.Sprintf("{\n      %s\n    }", strings.Join(parts, ",\n      "))
+	sb.WriteString("    }")
+	return sb.String()
 }
 
 func formatCreateTable(table domain.Table) string {
-	var cols []string
+	var primaryKeys []string
+	var otherKeys []string
 
-	primaryKeys := []string{}
-	otherKeys := []string{}
 	for colName, col := range table.Columns {
 		if col.PrimaryKey {
 			primaryKeys = append(primaryKeys, colName)
@@ -237,11 +268,11 @@ func formatCreateTable(table domain.Table) string {
 	sort.Strings(otherKeys)
 	orderedKeys := append(primaryKeys, otherKeys...)
 
+	var cols []string
 	for _, colName := range orderedKeys {
 		col := table.Columns[colName]
-		cols = append(cols, fmt.Sprintf("  %s: %s", col.Name, formatColumnAttributes(col)))
+		cols = append(cols, fmt.Sprintf("    %s: %s", colName, formatColumnAttributes(col)))
 	}
-
 	return fmt.Sprintf("await queryInterface.createTable('%s', {\n%s\n});", table.Name, strings.Join(cols, ",\n"))
 }
 
@@ -261,4 +292,27 @@ func formatRemoveColumn(tableName, colName string) string {
 
 func formatDropTable(tableName string) string {
 	return fmt.Sprintf("await queryInterface.dropTable('%s');", tableName)
+}
+
+func formatAddIndex(tableName string, idx domain.Index) string {
+	quotedFields := make([]string, len(idx.Fields))
+	for i, f := range idx.Fields {
+		quotedFields[i] = fmt.Sprintf("'%s'", f)
+	}
+	var opts []string
+	if idx.Name != "" {
+		opts = append(opts, fmt.Sprintf("name: '%s'", idx.Name))
+	}
+	if idx.Unique {
+		opts = append(opts, "unique: true")
+	}
+	optStr := ""
+	if len(opts) > 0 {
+		optStr = fmt.Sprintf(", {\n      %s\n    }", strings.Join(opts, ",\n      "))
+	}
+	return fmt.Sprintf("await queryInterface.addIndex('%s', [%s]%s);", tableName, strings.Join(quotedFields, ", "), optStr)
+}
+
+func formatRemoveIndex(tableName, indexName string) string {
+	return fmt.Sprintf("await queryInterface.removeIndex('%s', '%s');", tableName, indexName)
 }

@@ -408,15 +408,28 @@ module.exports = {
 			t.Errorf("expected dry run or no changes message, got: %s", string(dryOut))
 		}
 
-		// 3. Test invalid command -> Exits with code 1
-		invalidCmd := exec.Command(binPath, "nonexistent-cmd")
-		invalidCmd.Dir = workDir
-		_, invalidErr := invalidCmd.CombinedOutput()
-		if invalidErr == nil {
-			t.Errorf("expected nonexistent command to fail with non-zero exit code")
+		// 3. Test init command generates schema snapshot
+		initSchemaPath := filepath.Join(workDir, "init-test-schema.json")
+		initCmd := exec.Command(binPath, "init", "--schema-file", initSchemaPath)
+		initCmd.Dir = workDir
+		initCmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		initOut, initErr := initCmd.CombinedOutput()
+		if initErr != nil {
+			t.Fatalf("init command failed: %v, out: %s", initErr, string(initOut))
+		}
+		if _, err := os.Stat(initSchemaPath); err != nil {
+			t.Fatalf("expected init command to create schema file %s", initSchemaPath)
 		}
 
-		// 4. Test repair command
+		// 4. Test invalid command -> Exits with exact code 1
+		invalidCmd := exec.Command(binPath, "nonexistent-cmd")
+		invalidCmd.Dir = workDir
+		invalidErr := invalidCmd.Run()
+		if exitError, ok := invalidErr.(*exec.ExitError); !ok || exitError.ExitCode() != 1 {
+			t.Errorf("expected exact exit code 1 for nonexistent command, got: %v", invalidErr)
+		}
+
+		// 5. Test repair command
 		repairCmd := exec.Command(binPath, "repair", "--fix-down")
 		repairCmd.Dir = workDir
 		repairOut, repairErr := repairCmd.CombinedOutput()
@@ -429,29 +442,86 @@ module.exports = {
 	})
 
 	// ==========================================
-	// STAGE 7: Sequelize v7 Generator Integration
+	// STAGE 7: Sequelize v7 Runtime Execution & Migration Test
 	// ==========================================
-	t.Run("Stage 7: Generates valid v7 migration with target=v7", func(t *testing.T) {
-		// Make changes to trigger a diff
-		writeModels(
-			"  email: { type: DataTypes.STRING, allowNull: false, unique: true },\n  bio: { type: DataTypes.STRING(500), allowNull: true },\n  avatarUrl: { type: DataTypes.STRING(255), allowNull: true }",
-			"  price: { type: DataTypes.DECIMAL(10, 2), allowNull: false },\n  sku: { type: DataTypes.STRING(50), allowNull: true }",
-		)
-
-		v7Cmd := exec.Command(binPath, "make", "--name=add-v7-avatar", "--target=v7", "--dry-run")
+	t.Run("Stage 7: Generates and executes v7 migration at runtime with UP and DOWN", func(t *testing.T) {
+		// 1. Generate v7 migration
+		v7MigDir := filepath.Join(workDir, "v7_migrations")
+		_ = os.MkdirAll(v7MigDir, 0755)
+		v7Cmd := exec.Command(binPath, "make", "--name=v7-runtime-test", "--target=v7", "--migrations-dir", v7MigDir, "--schema-file", filepath.Join(workDir, "v7-schema.json"))
 		v7Cmd.Dir = workDir
 		v7Cmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
 		v7Out, v7Err := v7Cmd.CombinedOutput()
 		if v7Err != nil {
-			t.Fatalf("v7 generation failed: %v, out: %s", v7Err, string(v7Out))
+			t.Fatalf("v7 migration generation failed: %v, out: %s", v7Err, string(v7Out))
 		}
 
-		v7Str := string(v7Out)
-		if !strings.Contains(v7Str, "@sequelize/core") {
-			t.Errorf("expected @sequelize/core import in v7 generated code, got: %s", v7Str)
+		// Locate generated v7 migration file
+		entries, _ := os.ReadDir(v7MigDir)
+		if len(entries) == 0 {
+			t.Fatalf("expected generated v7 migration file")
 		}
-		if !strings.Contains(v7Str, "DataTypes.") {
-			t.Errorf("expected DataTypes.* in v7 generated code, got: %s", v7Str)
+		v7FilePath := filepath.Join(v7MigDir, entries[0].Name())
+
+		// Verify syntax has @sequelize/core and DataTypes
+		v7Content, _ := os.ReadFile(v7FilePath)
+		v7Str := string(v7Content)
+		if !strings.Contains(v7Str, "@sequelize/core") || !strings.Contains(v7Str, "DataTypes.") {
+			t.Errorf("v7 migration missing @sequelize/core or DataTypes syntax: %s", v7Str)
+		}
+
+		// 2. Real Runtime Execution Test of v7 migration (UP and DOWN) in Node.js
+		runnerScript := fmt.Sprintf(`'use strict';
+const Module = require('module');
+const { Sequelize, DataTypes } = require('sequelize');
+
+// Alias @sequelize/core to local DataTypes for test runtime execution
+const origRequire = Module.prototype.require;
+Module.prototype.require = function(id) {
+  if (id === '@sequelize/core') {
+    return { DataTypes };
+  }
+  return origRequire.apply(this, arguments);
+};
+
+const sequelize = new Sequelize({ dialect: 'sqlite', storage: ':memory:', logging: false });
+const queryInterface = sequelize.getQueryInterface();
+const migration = require(%q);
+
+async function testRuntime() {
+  // Test UP
+  await migration.up(queryInterface);
+  const [tablesUp] = await sequelize.query("SELECT name FROM sqlite_master WHERE type='table' AND name='Users';");
+  if (!tablesUp.length) {
+    throw new Error("Users table was not created by v7 migration.up()");
+  }
+
+  // Test DOWN
+  await migration.down(queryInterface);
+  const [tablesDown] = await sequelize.query("SELECT name FROM sqlite_master WHERE type='table' AND name='Users';");
+  if (tablesDown.length) {
+    throw new Error("Users table was not dropped by v7 migration.down()");
+  }
+
+  console.log("V7_RUNTIME_SUCCESS");
+  await sequelize.close();
+}
+
+testRuntime().catch(err => {
+  console.error("V7_RUNTIME_ERROR:", err.message);
+  process.exit(1);
+});
+`, v7FilePath)
+
+		nodeCmd := exec.Command("node", "-e", runnerScript)
+		nodeCmd.Dir = workDir
+		nodeCmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		nodeOut, nodeErr := nodeCmd.CombinedOutput()
+		if nodeErr != nil {
+			t.Fatalf("v7 runtime execution failed: %v, out: %s", nodeErr, string(nodeOut))
+		}
+		if !strings.Contains(string(nodeOut), "V7_RUNTIME_SUCCESS") {
+			t.Errorf("expected V7_RUNTIME_SUCCESS, got: %s", string(nodeOut))
 		}
 	})
 }
