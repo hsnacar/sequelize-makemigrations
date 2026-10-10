@@ -21,7 +21,7 @@ It replaces abandoned packages like `sequelize-auto-migrations` by bringing Djan
 ┌────────────────────────────────────────────────────────┐
 │                      CLI Layer                         │
 │               cmd/seq-migrate/main.go                   │
-│   (Commands: make, verify, dry-run, status, apply)     │
+│ (make, check, doctor, upgrade, repair, status, init)   │
 └──────────────────────────┬─────────────────────────────┘
                            │
 ┌──────────────────────────▼─────────────────────────────┐
@@ -29,6 +29,9 @@ It replaces abandoned packages like `sequelize-auto-migrations` by bringing Djan
 │  - core/domain: Schema IR, Table, Column, Index, Diff  │
 │  - core/ports:  Extractor, DiffEngine, Generator, etc. │
 │  - core/diff:   Pure algorithmic diff calculation      │
+│  - core/repair: Migration auditor & down repairer      │
+│  - core/doctor: Sequelize v7 readiness audit           │
+│  - core/upgrade: Automated migration codemod to v7     │
 └────────────┬─────────────────────────────┬─────────────┘
              │                             │
 ┌────────────▼──────────────┐ ┌────────────▼─────────────┐

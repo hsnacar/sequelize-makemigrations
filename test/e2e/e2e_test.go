@@ -166,7 +166,7 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 		if err != nil {
 			t.Fatalf("error checking Users: %v", err)
 		}
-		expectedUserCols := []string{"id", "name", "email"}
+		expectedUserCols := []string{"id", "email", "name"}
 		if strings.Join(userCols, ",") != strings.Join(expectedUserCols, ",") {
 			t.Errorf("Users columns mismatch! Expected %v, got %v", expectedUserCols, userCols)
 		}
@@ -175,7 +175,7 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 		if err != nil {
 			t.Fatalf("error checking Products: %v", err)
 		}
-		expectedProdCols := []string{"id", "title", "price"}
+		expectedProdCols := []string{"id", "price", "title"}
 		if strings.Join(prodCols, ",") != strings.Join(expectedProdCols, ",") {
 			t.Errorf("Products columns mismatch! Expected %v, got %v", expectedProdCols, prodCols)
 		}
@@ -238,13 +238,13 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 
 		// 4. Verify that "bio" and "sku" now physically exist in real SQLite DB!
 		userCols, _ := getActualColumns("Users")
-		expectedUserCols := []string{"id", "name", "email", "bio"}
+		expectedUserCols := []string{"id", "email", "name", "bio"}
 		if strings.Join(userCols, ",") != strings.Join(expectedUserCols, ",") {
 			t.Errorf("Users columns mismatch after incremental migration! Expected %v, got %v", expectedUserCols, userCols)
 		}
 
 		prodCols, _ := getActualColumns("Products")
-		expectedProdCols := []string{"id", "title", "price", "sku"}
+		expectedProdCols := []string{"id", "price", "title", "sku"}
 		if strings.Join(prodCols, ",") != strings.Join(expectedProdCols, ",") {
 			t.Errorf("Products columns mismatch after incremental migration! Expected %v, got %v", expectedProdCols, prodCols)
 		}
@@ -259,9 +259,82 @@ inspect().catch(err => { console.error(err); process.exit(1); });
 
 		// Verify that "bio" and "sku" were cleanly removed and schema returned to initial state!
 		revertedUserCols, _ := getActualColumns("Users")
-		initialUserCols := []string{"id", "name", "email"}
+		initialUserCols := []string{"id", "email", "name"}
 		if strings.Join(revertedUserCols, ",") != strings.Join(initialUserCols, ",") {
 			t.Errorf("Rollback failed! Expected %v, got %v", initialUserCols, revertedUserCols)
+		}
+	})
+
+	// ==========================================
+	// STAGE 5: Doctor & Upgrade (Version Modernization)
+	// ==========================================
+	t.Run("Stage 5: Doctor diagnoses legacy migration and upgrade modernizes it", func(t *testing.T) {
+		legacyFile := filepath.Join(workDir, "migrations", "20200101000000-legacy-v6.js")
+		legacyContent := `'use strict';
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    await queryInterface.createTable('OldData', {
+      amount: { type: Sequelize.NUMERIC(10, 2) },
+      payload: { type: Sequelize.JSONTYPE }
+    });
+  },
+  async down(queryInterface, Sequelize) {
+    await queryInterface.dropTable('OldData');
+  }
+};`
+		if err := os.WriteFile(legacyFile, []byte(legacyContent), 0644); err != nil {
+			t.Fatalf("failed to create legacy migration: %v", err)
+		}
+
+		// 1. Run Doctor -> Expect breaking findings
+		docCmd := exec.Command(binPath, "doctor", "--target=v7")
+		docCmd.Dir = workDir
+		docOut, docErr := docCmd.CombinedOutput()
+		if docErr == nil {
+			t.Fatalf("expected doctor to fail with exit status 1 due to breaking types, but passed! Output: %s", string(docOut))
+		}
+		if !strings.Contains(string(docOut), "Sequelize.NUMERIC") || !strings.Contains(string(docOut), "Sequelize.JSONTYPE") {
+			t.Errorf("expected NUMERIC and JSONTYPE breaking findings, got: %s", string(docOut))
+		}
+
+		// 2. Run Upgrade -> Modernize migration
+		upgCmd := exec.Command(binPath, "upgrade", "--to=v7")
+		upgCmd.Dir = workDir
+		upgOut, upgErr := upgCmd.CombinedOutput()
+		if upgErr != nil {
+			t.Fatalf("upgrade failed: %s", string(upgOut))
+		}
+		if !strings.Contains(string(upgOut), "Successfully modernized") {
+			t.Errorf("expected success message, got: %s", string(upgOut))
+		}
+
+		// Check that backup file was created
+		if _, err := os.Stat(legacyFile + ".bak"); err != nil {
+			t.Errorf("expected backup file to exist: %v", err)
+		}
+
+		// Check that file now has DataTypes.DECIMAL, DataTypes.JSON, and @sequelize/core import
+		upgraded, _ := os.ReadFile(legacyFile)
+		upStr := string(upgraded)
+		if !strings.Contains(upStr, "DataTypes.DECIMAL(10, 2)") {
+			t.Errorf("expected DataTypes.DECIMAL in modernized file, got: %s", upStr)
+		}
+		if !strings.Contains(upStr, "DataTypes.JSON") {
+			t.Errorf("expected DataTypes.JSON in modernized file, got: %s", upStr)
+		}
+		if !strings.Contains(upStr, "@sequelize/core") {
+			t.Errorf("expected @sequelize/core import in modernized file, got: %s", upStr)
+		}
+
+		// 3. Re-run Doctor -> Now should pass clean!
+		cleanDocCmd := exec.Command(binPath, "doctor", "--target=v7")
+		cleanDocCmd.Dir = workDir
+		cleanDocOut, cleanDocErr := cleanDocCmd.CombinedOutput()
+		if cleanDocErr != nil {
+			t.Fatalf("expected doctor to pass after upgrade, got err: %v, out: %s", cleanDocErr, string(cleanDocOut))
+		}
+		if !strings.Contains(string(cleanDocOut), "Clean bill of health") {
+			t.Errorf("expected clean bill of health, got: %s", string(cleanDocOut))
 		}
 	})
 }

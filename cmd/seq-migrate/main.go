@@ -13,9 +13,11 @@ import (
 	"github.com/hsnacar/sequelize-makemigrations/adapters/generator"
 	"github.com/hsnacar/sequelize-makemigrations/adapters/verifier"
 	"github.com/hsnacar/sequelize-makemigrations/core/diff"
+	"github.com/hsnacar/sequelize-makemigrations/core/doctor"
 	"github.com/hsnacar/sequelize-makemigrations/core/domain"
 	"github.com/hsnacar/sequelize-makemigrations/core/ports"
 	"github.com/hsnacar/sequelize-makemigrations/core/repair"
+	"github.com/hsnacar/sequelize-makemigrations/core/upgrade"
 )
 
 const version = "1.0.0"
@@ -33,6 +35,10 @@ func main() {
 		runMake(os.Args[2:])
 	case "check", "lint":
 		runCheck(os.Args[2:])
+	case "doctor":
+		runDoctor(os.Args[2:])
+	case "upgrade":
+		runUpgrade(os.Args[2:])
 	case "repair":
 		runRepair(os.Args[2:])
 	case "status":
@@ -60,6 +66,8 @@ Usage:
 Commands:
   make, makemigrations   Generate a new migration from model changes
   check, lint            Audit consistency between models, snapshot, and migration files (CI/CD friendly)
+  doctor                 Diagnose legacy migrations for Sequelize version compatibility (v6 -> v7)
+  upgrade                Automatically modernize and codemod legacy migration files to target version
   repair                 Fix broken migrations or re-sync corrupted schema snapshots
   status                 Show pending model differences vs current schema
   init                   Snapshot current models as initial schema baseline
@@ -75,6 +83,16 @@ Options for 'make':
   --dry-run              Preview diff and migration code without saving files
   --verify               Verify migration on an ephemeral shadow DB sandbox before writing
 
+Options for 'doctor':
+  -t, --target           Target Sequelize version to audit against (default: "v7")
+  -d, --migrations-dir   Directory containing migration files (default: "migrations")
+
+Options for 'upgrade':
+  --to                   Target Sequelize version to upgrade to (default: "v7")
+  -d, --migrations-dir   Directory containing migration files (default: "migrations")
+  --dry-run              Preview codemod transformations without saving files
+  --no-backup            Do not create .bak backup files
+
 Options for 'check':
   -m, --models           Path to Sequelize models
   -d, --migrations-dir   Directory containing migration files (default: "migrations")
@@ -87,6 +105,11 @@ Options for 'repair':
   -d, --migrations-dir   Directory containing migration files (default: "migrations")
 
 Examples:
+  npx seq-migrate make -n add-user-bio --verify
+  npx seq-migrate doctor --target=v7
+  npx seq-migrate upgrade --to=v7 --dry-run
+  npx seq-migrate check
+  npx seq-migrate repair --fix-down
   npx seq-migrate make -n add-user-bio --verify
   npx seq-migrate check
   npx seq-migrate repair --fix-down`)
@@ -420,3 +443,92 @@ func printDiffSummary(d *domain.Diff) {
 	}
 	fmt.Println()
 }
+
+func runDoctor(args []string) {
+	fs := flag.NewFlagSet("doctor", flag.ExitOnError)
+	var (
+		migrationsDir string
+		targetVersion string
+	)
+	fs.StringVar(&migrationsDir, "d", "migrations", "Migrations directory")
+	fs.StringVar(&migrationsDir, "migrations-dir", "migrations", "Migrations directory")
+	fs.StringVar(&targetVersion, "t", "v7", "Target Sequelize version")
+	fs.StringVar(&targetVersion, "target", "v7", "Target Sequelize version")
+	fs.Parse(args)
+
+	fmt.Printf("🩺 Running Sequelize migration compatibility audit for %s...\n\n", targetVersion)
+	report, err := doctor.AuditDirectory(migrationsDir, targetVersion)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error scanning migrations: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(report.Findings) == 0 {
+		fmt.Printf("🎉 Clean bill of health! All %d migration files are fully compatible with %s.\n", report.TotalFilesScanned, targetVersion)
+		return
+	}
+
+	fmt.Printf("📊 Scanned %d file(s). Found %d breaking change(s) and %d warning(s):\n\n",
+		report.TotalFilesScanned, report.BreakingCount, report.WarningCount)
+
+	for _, f := range report.Findings {
+		prefix := "⚠️ [WARN]"
+		if f.Severity == "BREAKING" {
+			prefix = "❌ [BREAKING]"
+		}
+		fmt.Printf("  %s %s:%d\n     Found: %s\n     Fix:   %s\n     Why:   %s\n\n",
+			prefix, f.File, f.Line, f.MatchedText, f.Suggestion, f.Description)
+	}
+
+	if report.BreakingCount > 0 {
+		fmt.Println("👉 Run 'npx seq-migrate upgrade --to=v7' to automatically transform legacy migrations.")
+		os.Exit(1)
+	}
+}
+
+func runUpgrade(args []string) {
+	fs := flag.NewFlagSet("upgrade", flag.ExitOnError)
+	var (
+		toVersion     string
+		migrationsDir string
+		dryRun        bool
+		noBackup      bool
+	)
+	fs.StringVar(&toVersion, "to", "v7", "Target Sequelize version (v7)")
+	fs.StringVar(&migrationsDir, "d", "migrations", "Migrations directory")
+	fs.StringVar(&migrationsDir, "migrations-dir", "migrations", "Migrations directory")
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview changes without modifying files")
+	fs.BoolVar(&noBackup, "no-backup", false, "Do not create .bak backup files")
+	fs.Parse(args)
+
+	fmt.Printf("🚀 Upgrading migration files to %s...\n", toVersion)
+	results, err := upgrade.UpgradeDirectory(migrationsDir, dryRun, !noBackup)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error during upgrade: %v\n", err)
+		os.Exit(1)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("✨ No legacy patterns found. All migrations are already up to date!")
+		return
+	}
+
+	for _, r := range results {
+		status := "upgraded"
+		if dryRun {
+			status = "would upgrade"
+		}
+		backupInfo := ""
+		if r.BackupPath != "" {
+			backupInfo = fmt.Sprintf(" (backup: %s)", filepath.Base(r.BackupPath))
+		}
+		fmt.Printf("  [%s] %s (%d changes)%s\n", status, r.File, r.ChangesMade, backupInfo)
+	}
+
+	if dryRun {
+		fmt.Println("\n⚠️ Dry run completed. Run without --dry-run to apply.")
+	} else {
+		fmt.Printf("\n🎉 Successfully modernized %d migration file(s) for %s!\n", len(results), toVersion)
+	}
+}
+

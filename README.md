@@ -80,7 +80,47 @@ Preview detected changes and generated migration code in your terminal without w
 npx seq-migrate make --dry-run
 ```
 
-### 4. Check Status (`status`)
+### 4. Continuous Integration & Drift Detection (`check`)
+
+Verify that all Sequelize models match the current migration schema state (returns exit code `1` if drift is detected — ideal for CI/CD pipelines):
+
+```bash
+npx seq-migrate check
+```
+
+### 5. Migration Health & Auto-Repair (`repair`)
+
+Audit all existing migration files for missing `down` handlers or syntax irregularities, and automatically fix them:
+
+```bash
+# Audit migration files
+npx seq-migrate repair
+
+# Auto-generate and patch missing down() functions
+npx seq-migrate repair --fix-down
+```
+
+### 6. Sequelize v7 Readiness Audit (`doctor`)
+
+Diagnose legacy Sequelize patterns, deprecated DataTypes (`NUMERIC`, `JSONTYPE`, `DOUBLE PRECISION`, etc.), and incompatible migration constructs before upgrading to Sequelize v7:
+
+```bash
+npx seq-migrate doctor
+```
+
+### 7. Automated Migration Upgrade Codemod (`upgrade`)
+
+Safely modernize existing Sequelize migrations to modern Sequelize v7 syntax (`@sequelize/core`, `DataTypes.*`), creating automated `.bak` backups before mutating files:
+
+```bash
+# Preview changes safely
+npx seq-migrate upgrade --to=v7 --dry-run
+
+# Apply codemod with automatic backup
+npx seq-migrate upgrade --to=v7
+```
+
+### 8. Check Status (`status`)
 
 Check pending model changes that have not yet been migrated:
 
@@ -90,8 +130,18 @@ npx seq-migrate status
 
 ---
 
-## 🛠️ CLI Options
+## 🛠️ CLI Options & Commands
 
+### Available Commands:
+- `make` — Generate a new migration file from Sequelize model diffs.
+- `check` — Assert model vs schema snapshot consistency for CI/CD.
+- `doctor` — Audit migration files for Sequelize v7 breaking changes.
+- `upgrade` — Automatically modernize legacy migrations to Sequelize v7.
+- `repair` — Audit and auto-repair missing `down` rollback functions in migrations.
+- `status` — View current schema diff against models.
+- `init` — Initialize schema snapshot baseline from existing models.
+
+### Flags:
 | Option | Flag | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--name` | `-n` | `"migration"` | Name suffix for the generated migration file |
@@ -101,6 +151,8 @@ npx seq-migrate status
 | `--target` | `-t` | `"v6"` | Target Sequelize version (`v6` or `v7`) |
 | `--verify` | | `false` | Run migration UP & DOWN on an ephemeral sandbox DB |
 | `--dry-run` | | `false` | Preview diff and migration code without saving |
+| `--fix-down` | | `false` | Auto-generate missing down functions during repair |
+| `--to` | | `"v7"` | Target version for migration upgrade codemod |
 
 ---
 

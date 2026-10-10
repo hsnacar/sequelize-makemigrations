@@ -3,6 +3,7 @@ package v6
 import (
 	"bytes"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -211,8 +212,24 @@ func formatColumnAttributes(col domain.Column, seqVar string) string {
 }
 
 func formatCreateTable(table domain.Table, seqVar string) string {
-	var cols []string
+	// Sort column keys deterministically: primary keys first, then alphabetically
+	var primaryKeys []string
+	var otherKeys []string
+
 	for colName, col := range table.Columns {
+		if col.PrimaryKey {
+			primaryKeys = append(primaryKeys, colName)
+		} else {
+			otherKeys = append(otherKeys, colName)
+		}
+	}
+	sort.Strings(primaryKeys)
+	sort.Strings(otherKeys)
+	orderedKeys := append(primaryKeys, otherKeys...)
+
+	var cols []string
+	for _, colName := range orderedKeys {
+		col := table.Columns[colName]
 		cols = append(cols, fmt.Sprintf("    %s: %s", colName, formatColumnAttributes(col, seqVar)))
 	}
 	return fmt.Sprintf("await queryInterface.createTable('%s', {\n%s\n});", table.Name, strings.Join(cols, ",\n"))
