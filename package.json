@@ -1,7 +1,7 @@
 {
   "name": "sequelize-makemigrations",
   "version": "1.0.0",
-  "description": "Automated, zero-risk, high-performance migration generator for Sequelize (v6 & v7) powered by Go.",
+  "description": "Automated, zero-risk, high-performance migration generator for Sequelize (v6 Stable & v7 Experimental) powered by Go.",
   "bin": {
     "seq-migrate": "./bin/run.js",
     "sequelize-makemigrations": "./bin/run.js"

@@ -2,12 +2,39 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8.svg?style=flat-square&logo=go)](https://go.dev)
-[![Sequelize](https://img.shields.io/badge/Sequelize-v6%20%7C%20v7-52B0E7.svg?style=flat-square&logo=sequelize)](https://sequelize.org)
+[![Sequelize](https://img.shields.io/badge/Sequelize-v6%20(Stable)%20%7C%20v7%20(Experimental)-52B0E7.svg?style=flat-square&logo=sequelize)](https://sequelize.org)
 [![Zero-Risk Sandbox](https://img.shields.io/badge/Zero--Risk-Shadow%20DB%20Verified-brightgreen.svg?style=flat-square)](https://github.com/hsnacar/sequelize-makemigrations)
 
-**sequelize-makemigrations** (`seq-migrate`) brings the declarative, automated migration workflow of Django (`makemigrations`) and Prisma (`migrate dev`) to the **Sequelize (v6 & v7)** ecosystem.
+**sequelize-makemigrations** (`seq-migrate`) brings the declarative, automated migration workflow of Django (`makemigrations`) and Prisma (`migrate dev`) to the **Sequelize** ecosystem.
 
-Powered by a lightning-fast **Go** core with a zero-friction **npm** wrapper, it eliminates the tedious, error-prone manual creation of Sequelize migration files while guaranteeing **100% reversible rollbacks** and **Zero-Risk Shadow Database verification**.
+Powered by a lightning-fast **Go** core with a zero-friction **npm** wrapper, it eliminates manual creation of Sequelize migration files while guaranteeing **100% reversible rollbacks** and **Zero-Risk Shadow Database verification**.
+
+---
+
+## 🎯 Version Support & Stability Status
+
+| Version | Status | Model Diffing | Migration Generation | Shadow DB Verification (`--verify`) | Physical DB E2E Tested |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Sequelize v6** | 🟢 **Stable / Production-Ready** | Full | Reversible `up` / `down` | In-memory SQLite sandbox | Real SQLite FK, Index, Tables & Columns |
+| **Sequelize v7** | 🟡 **Experimental (Alpha)** | Full | Modern `@sequelize/core` AST | In-memory SQLite sandbox | Syntax & AST generation; unverified on real v7 GA |
+
+> [!NOTE]
+> **About Sequelize v7:**
+> Sequelize v7 (`@sequelize/core`) is currently in **alpha** (`7.0.0-alpha.x`) across the npm ecosystem and has not reached General Availability (GA). `seq-migrate` provides forward-compatible AST migration generators (`--target=v7`), audit tooling (`doctor`), and modernization codemods (`upgrade --to=v7`). Real-world end-to-end execution against production v7 environments is considered **experimental** until Sequelize v7 reaches official GA.
+
+---
+
+## 🖥️ Platform Support & Binary Distribution
+
+`sequelize-makemigrations` distributes pre-compiled native binaries inside the npm package for instant execution. **End-users do NOT need Go installed.**
+
+### Supported Platforms:
+- **macOS**: Apple Silicon (`darwin-arm64`), Intel (`darwin-amd64`)
+- **Linux**: x64 (`linux-amd64`), ARM64 (`linux-arm64`)
+- **Windows**: x64 (`win32-amd64`)
+
+> [!NOTE]
+> Go 1.22+ is only required for contributors/maintainers building the package from source (`npm run build` or `prepublishOnly`).
 
 ---
 
