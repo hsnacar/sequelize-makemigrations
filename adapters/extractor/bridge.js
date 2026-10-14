@@ -79,11 +79,11 @@ async function extractSchema() {
         allowNull: attr.allowNull !== false,
         primaryKey: Boolean(attr.primaryKey),
         autoIncrement: Boolean(attr.autoIncrement),
-        unique: Boolean(attr.unique),
+        unique: typeof attr.unique === 'string' ? attr.unique : Boolean(attr.unique),
         defaultValue: attr.defaultValue !== undefined ? attr.defaultValue : null,
         comment: attr.comment || '',
         references: attr.references ? {
-          model: typeof attr.references.model === 'string' ? attr.references.model : (attr.references.model && (attr.references.model.tableName || attr.references.model.name)),
+          model: resolveModelName(attr.references.model),
           key: attr.references.key || 'id'
         } : null
       };
@@ -112,22 +112,43 @@ async function extractSchema() {
   process.stdout.write(JSON.stringify(schema, null, 2));
 }
 
+function resolveModelName(refModel) {
+  if (!refModel) return '';
+  if (typeof refModel === 'string') return refModel;
+  if (typeof refModel.getTableName === 'function') {
+    const tn = refModel.getTableName();
+    if (typeof tn === 'string') return tn;
+    if (tn && tn.tableName) return tn.tableName;
+  }
+  if (refModel.tableName) {
+    if (typeof refModel.tableName === 'string') return refModel.tableName;
+    if (refModel.tableName.tableName) return refModel.tableName.tableName;
+  }
+  if (refModel.name) return refModel.name;
+  return '';
+}
+
 function findModelsPath(root) {
   const candidates = [
-    path.join(root, 'models'),
     path.join(root, 'models', 'index.js'),
     path.join(root, 'models', 'index.ts'),
-    path.join(root, 'src', 'models'),
+    path.join(root, 'models'),
     path.join(root, 'src', 'models', 'index.js'),
-    path.join(root, 'src', 'models', 'index.ts')
+    path.join(root, 'src', 'models', 'index.ts'),
+    path.join(root, 'src', 'models')
   ];
 
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
+    try {
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    } catch (_) {}
   }
   return null;
 }
 
-extractSchema();
+extractSchema().catch(err => {
+  console.error("FATAL_EXTRACTOR_ERROR:", err);
+  process.exit(1);
+});

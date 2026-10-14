@@ -106,6 +106,15 @@ func hasColumnChanged(oldCol, newCol domain.Column) bool {
 	if oldCol.Type.Length != newCol.Type.Length {
 		return true
 	}
+	if oldCol.Type.Precision != newCol.Type.Precision {
+		return true
+	}
+	if oldCol.Type.Scale != newCol.Type.Scale {
+		return true
+	}
+	if !slicesEqual(oldCol.Type.Values, newCol.Type.Values) {
+		return true
+	}
 	if oldCol.AllowNull != newCol.AllowNull {
 		return true
 	}
@@ -118,13 +127,43 @@ func hasColumnChanged(oldCol, newCol domain.Column) bool {
 	if !reflect.DeepEqual(oldCol.DefaultValue, newCol.DefaultValue) {
 		return true
 	}
-	if oldCol.Unique != newCol.Unique {
+	if !uniqueEqual(oldCol.Unique, newCol.Unique) {
+		return true
+	}
+	if oldCol.Comment != newCol.Comment {
 		return true
 	}
 	if !reflect.DeepEqual(oldCol.References, newCol.References) {
 		return true
 	}
 	return false
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) == 0 && len(b) == 0 {
+		return true
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+func uniqueEqual(a, b interface{}) bool {
+	hasA, nameA := parseUnique(a)
+	hasB, nameB := parseUnique(b)
+	return hasA == hasB && nameA == nameB
+}
+
+func parseUnique(u interface{}) (bool, string) {
+	if u == nil {
+		return false, ""
+	}
+	switch v := u.(type) {
+	case bool:
+		return v, ""
+	case string:
+		return v != "", v
+	default:
+		return false, ""
+	}
 }
 
 func (e *Engine) diffIndexes(tableName string, oldIndexes, newIndexes []domain.Index, diff *domain.Diff) {
@@ -136,7 +175,17 @@ func (e *Engine) diffIndexes(tableName string, oldIndexes, newIndexes []domain.I
 	newMap := make(map[string]domain.Index)
 	for _, idx := range newIndexes {
 		newMap[idx.Name] = idx
-		if _, exists := oldMap[idx.Name]; !exists {
+		oldIdx, exists := oldMap[idx.Name]
+		if !exists {
+			diff.IndexesAdded = append(diff.IndexesAdded, domain.IndexDiff{
+				TableName: tableName,
+				Index:     idx,
+			})
+		} else if !reflect.DeepEqual(oldIdx, idx) {
+			diff.IndexesDropped = append(diff.IndexesDropped, domain.IndexDiff{
+				TableName: tableName,
+				Index:     oldIdx,
+			})
 			diff.IndexesAdded = append(diff.IndexesAdded, domain.IndexDiff{
 				TableName: tableName,
 				Index:     idx,
@@ -163,7 +212,17 @@ func (e *Engine) diffConstraints(tableName string, oldConstraints, newConstraint
 	newMap := make(map[string]domain.Constraint)
 	for _, c := range newConstraints {
 		newMap[c.Name] = c
-		if _, exists := oldMap[c.Name]; !exists {
+		oldC, exists := oldMap[c.Name]
+		if !exists {
+			diff.ConstraintsAdded = append(diff.ConstraintsAdded, domain.ConstraintDiff{
+				TableName:  tableName,
+				Constraint: c,
+			})
+		} else if !reflect.DeepEqual(oldC, c) {
+			diff.ConstraintsDropped = append(diff.ConstraintsDropped, domain.ConstraintDiff{
+				TableName:  tableName,
+				Constraint: oldC,
+			})
 			diff.ConstraintsAdded = append(diff.ConstraintsAdded, domain.ConstraintDiff{
 				TableName:  tableName,
 				Constraint: c,

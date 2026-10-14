@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
-	"strings"
 
 	"github.com/hsnacar/sequelize-makemigrations/core/ports"
 )
@@ -26,17 +24,14 @@ func NewSandboxVerifier(projectPath string) ports.Verifier {
 }
 
 func (v *SandboxVerifier) Verify(ctx context.Context, migration *ports.GeneratedMigration) error {
-	// 1. Collect and sort all existing migrations in project
-	absMigrationsDir := filepath.Join(v.ProjectPath, v.MigrationsDir)
-	existingFiles := []string{}
-
-	if entries, err := os.ReadDir(absMigrationsDir); err == nil {
-		for _, entry := range entries {
-			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".js") {
-				existingFiles = append(existingFiles, filepath.Join(absMigrationsDir, entry.Name()))
-			}
+	// 1. Read schema snapshot if available to reconstruct base schema
+	var snapshotJSON string = "null"
+	schemaPath := filepath.Join(v.ProjectPath, ".seq-schema.json")
+	if data, err := os.ReadFile(schemaPath); err == nil && len(data) > 0 {
+		var jsTest map[string]interface{}
+		if json.Unmarshal(data, &jsTest) == nil {
+			snapshotJSON = string(data)
 		}
-		sort.Strings(existingFiles)
 	}
 
 	// 2. Create a temporary migration file in a sandbox directory
@@ -50,8 +45,6 @@ func (v *SandboxVerifier) Verify(ctx context.Context, migration *ports.Generated
 	if err := os.WriteFile(migrationPath, []byte(migration.Content), 0644); err != nil {
 		return fmt.Errorf("failed to write sandbox migration: %w", err)
 	}
-
-	existingFilesJSON, _ := json.Marshal(existingFiles)
 
 	// 3. Prepare verification runner script using an in-memory SQLite sandbox
 	runnerScript := fmt.Sprintf(`'use strict';
@@ -67,19 +60,35 @@ async function testMigration() {
   });
 
   const queryInterface = sequelize.getQueryInterface();
-  const existingFiles = %s;
+  const snapshotData = %s;
   const newMigration = require(%q);
 
-  // 1. Replay all existing migrations in order
-  for (const file of existingFiles) {
-    try {
-      const mig = require(file);
-      if (typeof mig.up === 'function') {
-        await mig.up(queryInterface, Sequelize);
+  // 1. If schema snapshot exists, reconstruct base tables instead of executing past migrations
+  if (snapshotData && snapshotData.tables) {
+    for (const [tableName, table] of Object.entries(snapshotData.tables)) {
+      const columns = {};
+      for (const [colName, col] of Object.entries(table.columns || {})) {
+        let type = Sequelize.STRING;
+        const typeName = (col.type && col.type.name) || 'STRING';
+        if (Sequelize[typeName]) {
+          if (col.type && col.type.length) {
+            type = Sequelize[typeName](col.type.length);
+          } else if (col.type && col.type.precision && col.type.scale) {
+            type = Sequelize[typeName](col.type.precision, col.type.scale);
+          } else if (col.type && Array.isArray(col.type.values) && col.type.values.length) {
+            type = Sequelize[typeName](...col.type.values);
+          } else {
+            type = Sequelize[typeName];
+          }
+        }
+        columns[colName] = {
+          type,
+          allowNull: col.allowNull !== false,
+          primaryKey: Boolean(col.primaryKey),
+          autoIncrement: Boolean(col.autoIncrement)
+        };
       }
-    } catch (err) {
-      console.error("FAIL_PREVIOUS_MIGRATION (" + path.basename(file) + "): " + err.message);
-      process.exit(9);
+      await queryInterface.createTable(tableName, columns);
     }
   }
 
@@ -107,7 +116,7 @@ testMigration().catch(err => {
   console.error("FAIL_SANDBOX: " + err.message);
   process.exit(12);
 });
-`, string(existingFilesJSON), migrationPath)
+`, snapshotJSON, migrationPath)
 
 	runnerPath := filepath.Join(tmpDir, "verify-runner.js")
 	if err := os.WriteFile(runnerPath, []byte(runnerScript), 0644); err != nil {

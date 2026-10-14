@@ -2,6 +2,7 @@ package v7
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -150,7 +151,21 @@ func sanitizeSlug(name string) string {
 	name = strings.TrimSpace(strings.ToLower(name))
 	name = strings.ReplaceAll(name, " ", "-")
 	name = strings.ReplaceAll(name, "_", "-")
-	return name
+	var result strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			result.WriteRune(r)
+		}
+	}
+	slug := result.String()
+	for strings.Contains(slug, "--") {
+		slug = strings.ReplaceAll(slug, "--", "-")
+	}
+	slug = strings.Trim(slug, "-")
+	if slug == "" {
+		slug = "migration"
+	}
+	return slug
 }
 
 func indent(text, prefix string) string {
@@ -230,8 +245,20 @@ func formatColumnAttributes(col domain.Column) string {
 	if col.AutoIncrement {
 		sb.WriteString("      autoIncrement: true,\n")
 	}
-	if col.Unique {
-		sb.WriteString("      unique: true,\n")
+	if col.Unique != nil {
+		switch u := col.Unique.(type) {
+		case bool:
+			if u {
+				sb.WriteString("      unique: true,\n")
+			}
+		case string:
+			if u != "" {
+				sb.WriteString(fmt.Sprintf("      unique: '%s',\n", u))
+			}
+		}
+	}
+	if col.Comment != "" {
+		sb.WriteString(fmt.Sprintf("      comment: '%s',\n", col.Comment))
 	}
 	if col.References != nil && col.References.Model != "" {
 		sb.WriteString("      references: {\n")
@@ -245,8 +272,15 @@ func formatColumnAttributes(col domain.Column) string {
 			sb.WriteString(fmt.Sprintf("      defaultValue: '%s',\n", v))
 		case bool:
 			sb.WriteString(fmt.Sprintf("      defaultValue: %t,\n", v))
-		default:
+		case float64:
 			sb.WriteString(fmt.Sprintf("      defaultValue: %v,\n", v))
+		case int:
+			sb.WriteString(fmt.Sprintf("      defaultValue: %d,\n", v))
+		default:
+			jsonBytes, err := json.Marshal(v)
+			if err == nil {
+				sb.WriteString(fmt.Sprintf("      defaultValue: %s,\n", string(jsonBytes)))
+			}
 		}
 	}
 	sb.WriteString("    }")

@@ -114,11 +114,43 @@ func TestDiffEngine(t *testing.T) {
 			t.Errorf("expected autoIncrement change to be detected")
 		}
 
-		// Unique changed
+		// Unique changed (bool)
 		colUniqChanged := colBase
 		colUniqChanged.Unique = true
 		if !hasColumnChanged(colBase, colUniqChanged) {
 			t.Errorf("expected unique change to be detected")
+		}
+
+		// Unique changed (string constraint name)
+		colUniqStrChanged := colBase
+		colUniqStrChanged.Unique = "idx_custom_unique"
+		if !hasColumnChanged(colBase, colUniqStrChanged) {
+			t.Errorf("expected unique string constraint name change to be detected")
+		}
+
+		// Comment changed
+		colCommentChanged := colBase
+		colCommentChanged.Comment = "User email address"
+		if !hasColumnChanged(colBase, colCommentChanged) {
+			t.Errorf("expected comment change to be detected")
+		}
+
+		// Precision / Scale changed
+		colDecBase := domain.Column{Name: "price", Type: domain.DataType{Name: "DECIMAL", Precision: 10, Scale: 2}}
+		colDecPrecChanged := domain.Column{Name: "price", Type: domain.DataType{Name: "DECIMAL", Precision: 12, Scale: 2}}
+		if !hasColumnChanged(colDecBase, colDecPrecChanged) {
+			t.Errorf("expected decimal precision change to be detected")
+		}
+		colDecScaleChanged := domain.Column{Name: "price", Type: domain.DataType{Name: "DECIMAL", Precision: 10, Scale: 4}}
+		if !hasColumnChanged(colDecBase, colDecScaleChanged) {
+			t.Errorf("expected decimal scale change to be detected")
+		}
+
+		// Values changed (ENUM)
+		colEnumBase := domain.Column{Name: "status", Type: domain.DataType{Name: "ENUM", Values: []string{"active", "pending"}}}
+		colEnumChanged := domain.Column{Name: "status", Type: domain.DataType{Name: "ENUM", Values: []string{"active", "pending", "archived"}}}
+		if !hasColumnChanged(colEnumBase, colEnumChanged) {
+			t.Errorf("expected enum values change to be detected")
 		}
 
 		// References changed
@@ -126,6 +158,58 @@ func TestDiffEngine(t *testing.T) {
 		colRefChanged.References = &domain.Reference{Model: "Users", Key: "id"}
 		if !hasColumnChanged(colBase, colRefChanged) {
 			t.Errorf("expected foreign key reference change to be detected")
+		}
+	})
+
+	t.Run("Detects index attribute modifications as drop and add", func(t *testing.T) {
+		s1 := domain.NewSchema()
+		s1.Tables["Orders"] = domain.Table{
+			Name: "Orders",
+			Indexes: []domain.Index{
+				{Name: "idx_order_info", Fields: []string{"user_id"}, Unique: false},
+			},
+		}
+
+		s2 := domain.NewSchema()
+		s2.Tables["Orders"] = domain.Table{
+			Name: "Orders",
+			Indexes: []domain.Index{
+				{Name: "idx_order_info", Fields: []string{"user_id", "created_at"}, Unique: true},
+			},
+		}
+
+		d := engine.Compare(s1, s2)
+		if len(d.IndexesDropped) != 1 || d.IndexesDropped[0].Index.Name != "idx_order_info" {
+			t.Errorf("expected 1 dropped index for modified index, got %+v", d.IndexesDropped)
+		}
+		if len(d.IndexesAdded) != 1 || d.IndexesAdded[0].Index.Name != "idx_order_info" {
+			t.Errorf("expected 1 added index for modified index, got %+v", d.IndexesAdded)
+		}
+	})
+
+	t.Run("Detects constraint attribute modifications as drop and add", func(t *testing.T) {
+		s1 := domain.NewSchema()
+		s1.Tables["Orders"] = domain.Table{
+			Name: "Orders",
+			Constraints: []domain.Constraint{
+				{Name: "fk_user", Type: "FOREIGN_KEY", ForeignTable: "Users", ForeignField: "id", OnDelete: "RESTRICT"},
+			},
+		}
+
+		s2 := domain.NewSchema()
+		s2.Tables["Orders"] = domain.Table{
+			Name: "Orders",
+			Constraints: []domain.Constraint{
+				{Name: "fk_user", Type: "FOREIGN_KEY", ForeignTable: "Users", ForeignField: "id", OnDelete: "CASCADE"},
+			},
+		}
+
+		d := engine.Compare(s1, s2)
+		if len(d.ConstraintsDropped) != 1 || d.ConstraintsDropped[0].Constraint.Name != "fk_user" {
+			t.Errorf("expected 1 dropped constraint for modified constraint, got %+v", d.ConstraintsDropped)
+		}
+		if len(d.ConstraintsAdded) != 1 || d.ConstraintsAdded[0].Constraint.Name != "fk_user" {
+			t.Errorf("expected 1 added constraint for modified constraint, got %+v", d.ConstraintsAdded)
 		}
 	})
 

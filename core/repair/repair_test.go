@@ -3,6 +3,7 @@ package repair
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +80,62 @@ module.exports = {
 		err := RepairMissingDown(filepath.Join(tmpDir, "does-not-exist.js"))
 		if err == nil {
 			t.Errorf("expected error when repairing non-existent file")
+		}
+	})
+
+	t.Run("Recognizes various valid up and down syntax without false positives", func(t *testing.T) {
+		syntaxDir, err := os.MkdirTemp("", "seq-syntax-test-*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(syntaxDir)
+
+		// 1. Arrow functions
+		arrowFile := filepath.Join(syntaxDir, "20260101-arrow.js")
+		_ = os.WriteFile(arrowFile, []byte(`
+module.exports = {
+  up: async (queryInterface) => {},
+  down: (queryInterface) => {}
+};`), 0644)
+
+		// 2. Standard ES6 methods without async
+		syncFile := filepath.Join(syntaxDir, "20260102-sync.js")
+		_ = os.WriteFile(syncFile, []byte(`
+module.exports = {
+  up(queryInterface, Sequelize) {},
+  down(queryInterface, Sequelize) {}
+};`), 0644)
+
+		issues, err := AuditMigrations(syntaxDir)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(issues) != 0 {
+			t.Errorf("expected 0 issues for valid syntax variants, got: %+v", issues)
+		}
+	})
+
+	t.Run("Repair safely handles raw query strings containing closing brace", func(t *testing.T) {
+		queryFile := filepath.Join(tmpDir, "20260104-raw-query.js")
+		content := `module.exports = {
+  async up(queryInterface, Sequelize) {
+    await queryInterface.sequelize.query("SELECT * FROM users WHERE status LIKE '};'");
+  }
+};`
+		_ = os.WriteFile(queryFile, []byte(content), 0644)
+
+		err := RepairMissingDown(queryFile)
+		if err != nil {
+			t.Fatalf("failed to repair file with string containing closing brace: %v", err)
+		}
+
+		repairedBytes, _ := os.ReadFile(queryFile)
+		repairedStr := string(repairedBytes)
+		if !strings.Contains(repairedStr, "WHERE status LIKE '};'") {
+			t.Errorf("raw query string was corrupted during repair: %s", repairedStr)
+		}
+		if !strings.Contains(repairedStr, "async down(queryInterface, Sequelize)") {
+			t.Errorf("down handler was not appended properly: %s", repairedStr)
 		}
 	})
 }

@@ -636,6 +636,20 @@ module.exports = {
 		if !strings.Contains(string(repairOut), "Auditing and repairing migration files") {
 			t.Errorf("expected repair auditing message, got: %s", string(repairOut))
 		}
+
+		// 6. Test corrupted schema snapshot file error handling
+		corruptSnapshotPath := filepath.Join(workDir, "corrupt-snapshot.json")
+		_ = os.WriteFile(corruptSnapshotPath, []byte(`{ "version": 1, "tables": {`), 0644)
+		corruptCmd := exec.Command(binPath, "check", "--schema-file", corruptSnapshotPath)
+		corruptCmd.Dir = workDir
+		corruptCmd.Env = append(os.Environ(), fmt.Sprintf("NODE_PATH=%s", targetNodeModules))
+		corruptOut, corruptErr := corruptCmd.CombinedOutput()
+		if corruptErr == nil {
+			t.Errorf("expected check command to fail with corrupted schema snapshot, but succeeded!")
+		}
+		if !strings.Contains(string(corruptOut), "schema snapshot is corrupted") {
+			t.Errorf("expected corruption error message, got: %s", string(corruptOut))
+		}
 	})
 
 	// ==========================================

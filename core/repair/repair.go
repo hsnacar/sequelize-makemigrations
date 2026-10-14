@@ -17,8 +17,9 @@ type MigrationIssue struct {
 }
 
 var (
-	hasUpRegex   = regexp.MustCompile(`(async\s+up|up\s*:)`)
-	hasDownRegex = regexp.MustCompile(`(async\s+down|down\s*:)`)
+	hasUpRegex   = regexp.MustCompile(`(?i)(async\s+up\s*\(|\bup\s*\(|up\s*:\s*(async\s*)?function|up\s*:\s*(async\s*)?\(|up\s*:\s*async\s+[a-zA-Z0-9_]+\s*=>)`)
+	hasDownRegex = regexp.MustCompile(`(?i)(async\s+down\s*\(|\bdown\s*\(|down\s*:\s*(async\s*)?function|down\s*:\s*(async\s*)?\(|down\s*:\s*async\s+[a-zA-Z0-9_]+\s*=>)`)
+	reOuterClosing = regexp.MustCompile(`(?m)^\s*\};`)
 )
 
 // AuditMigrations inspects all migration files in the directory for structural and safety issues.
@@ -87,11 +88,22 @@ func RepairMissingDown(filePath string) error {
   }
 };`
 
-	lastClosingIndex := strings.LastIndex(content, "};")
-	if lastClosingIndex == -1 {
-		return fmt.Errorf("could not find closing '};' in %s", filePath)
+	matches := reOuterClosing.FindAllStringIndex(content, -1)
+	var insertPos int
+	var endPos int
+	if len(matches) > 0 {
+		lastMatch := matches[len(matches)-1]
+		insertPos = lastMatch[0]
+		endPos = lastMatch[1]
+	} else {
+		lastClosingIndex := strings.LastIndex(content, "};")
+		if lastClosingIndex == -1 {
+			return fmt.Errorf("could not find closing '};' in %s", filePath)
+		}
+		insertPos = lastClosingIndex
+		endPos = lastClosingIndex + 2
 	}
 
-	repaired := content[:lastClosingIndex] + stub
+	repaired := content[:insertPos] + stub + content[endPos:]
 	return os.WriteFile(filePath, []byte(repaired), 0644)
 }

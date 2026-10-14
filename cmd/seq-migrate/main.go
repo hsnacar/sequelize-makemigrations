@@ -20,7 +20,7 @@ import (
 	"github.com/hsnacar/sequelize-makemigrations/core/upgrade"
 )
 
-const version = "1.0.0"
+const version = "1.0.1"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -151,7 +151,11 @@ func runMake(args []string) {
 	cwd, _ := os.Getwd()
 
 	// 1. Read existing schema snapshot
-	oldSchema := loadSchemaSnapshot(schemaFile)
+	oldSchema, err := loadSchemaSnapshot(schemaFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
 
 	// 2. Extract current schema from Sequelize models
 	fmt.Println("🔍 Inspecting Sequelize models...")
@@ -263,7 +267,11 @@ func runCheck(args []string) {
 	}
 
 	// 2. Check for schema drift between models and snapshot
-	oldSchema := loadSchemaSnapshot(schemaFile)
+	oldSchema, err := loadSchemaSnapshot(schemaFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
 	ext := extractor.NewNodeExtractor(modelsPath)
 	newSchema, err := ext.ExtractSchema(context.Background(), cwd)
 	if err != nil {
@@ -358,7 +366,11 @@ func runStatus(args []string) {
 	fs.Parse(args)
 
 	cwd, _ := os.Getwd()
-	oldSchema := loadSchemaSnapshot(schemaFile)
+	oldSchema, err := loadSchemaSnapshot(schemaFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		os.Exit(1)
+	}
 
 	ext := extractor.NewNodeExtractor(modelsPath)
 	newSchema, err := ext.ExtractSchema(context.Background(), cwd)
@@ -397,16 +409,19 @@ func runInit(args []string) {
 	fmt.Printf("✅ Initialized schema baseline with %d tables in %s\n", len(schema.Tables), schemaFile)
 }
 
-func loadSchemaSnapshot(path string) *domain.Schema {
+func loadSchemaSnapshot(path string) (*domain.Schema, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return domain.NewSchema()
+		if os.IsNotExist(err) {
+			return domain.NewSchema(), nil
+		}
+		return nil, fmt.Errorf("failed to read schema snapshot (%s): %w", path, err)
 	}
 	var schema domain.Schema
 	if err := json.Unmarshal(data, &schema); err != nil {
-		return domain.NewSchema()
+		return nil, fmt.Errorf("schema snapshot is corrupted (%s): %w\nRun 'seq-migrate repair --snapshot' to rebuild", path, err)
 	}
-	return &schema
+	return &schema, nil
 }
 
 func saveSchemaSnapshot(path string, schema *domain.Schema) {

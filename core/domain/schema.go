@@ -28,7 +28,7 @@ type Column struct {
 	PrimaryKey    bool        `json:"primaryKey"`
 	AutoIncrement bool        `json:"autoIncrement"`
 	DefaultValue  interface{} `json:"defaultValue,omitempty"`
-	Unique        bool        `json:"unique,omitempty"`
+	Unique        interface{} `json:"unique,omitempty"`
 	Comment       string      `json:"comment,omitempty"`
 	References    *Reference  `json:"references,omitempty"`
 }

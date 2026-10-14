@@ -220,4 +220,57 @@ func TestGeneratorV7(t *testing.T) {
 			t.Errorf("expected references block with Customers.id in generated code, got: %s", res.Content)
 		}
 	})
+
+	t.Run("Sanitizes special characters in migration slug", func(t *testing.T) {
+		diff := &domain.Diff{}
+		res, err := gen.Generate(diff, ports.GeneratorOptions{MigrationName: "add user & bio #1 + profile!"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(res.Filename, "add-user-bio-1-profile.js") {
+			t.Errorf("expected sanitized slug in filename, got: %s", res.Filename)
+		}
+	})
+
+	t.Run("Formats complex default values, comment, and string unique correctly in v7", func(t *testing.T) {
+		diff := &domain.Diff{
+			TablesCreated: []domain.Table{
+				{
+					Name: "Settings",
+					Columns: map[string]domain.Column{
+						"tags": {
+							Name:         "tags",
+							Type:         domain.DataType{Name: "JSON"},
+							DefaultValue: []string{"admin", "ops"},
+							Comment:      "List of tags",
+						},
+						"config": {
+							Name:         "config",
+							Type:         domain.DataType{Name: "JSON"},
+							DefaultValue: map[string]interface{}{"retry": 3},
+							Unique:       "unique_config_idx",
+						},
+					},
+				},
+			},
+		}
+
+		res, err := gen.Generate(diff, ports.GeneratorOptions{MigrationName: "create-settings"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !strings.Contains(res.Content, `defaultValue: ["admin","ops"]`) {
+			t.Errorf("expected JSON array defaultValue, got: %s", res.Content)
+		}
+		if !strings.Contains(res.Content, `defaultValue: {"retry":3}`) {
+			t.Errorf("expected JSON object defaultValue, got: %s", res.Content)
+		}
+		if !strings.Contains(res.Content, `comment: 'List of tags'`) {
+			t.Errorf("expected comment in attributes, got: %s", res.Content)
+		}
+		if !strings.Contains(res.Content, `unique: 'unique_config_idx'`) {
+			t.Errorf("expected named unique constraint in attributes, got: %s", res.Content)
+		}
+	})
 }
