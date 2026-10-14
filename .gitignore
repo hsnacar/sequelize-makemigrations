@@ -16,3 +16,7 @@ examples/**/.seq-schema.json
 .DS_Store
 .idea/
 .vscode/
+
+# Internal
+bugs/
+
